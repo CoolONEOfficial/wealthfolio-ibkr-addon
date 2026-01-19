@@ -44,18 +44,108 @@ A comprehensive import solution for Interactive Brokers (IBKR) activity statemen
 
 To use automatic transaction fetching via IBKR Flex Query API:
 
+#### Step 1: Create Activity Flex Query
+
 1. Log in to [IBKR Account Management](https://www.interactivebrokers.com/sso/Login)
-2. Navigate to **Reports > Flex Queries**
-3. Create a new Flex Query with the following settings:
-   - **Report Type**: Activity Flex Query
-   - **Include**: Trades, Cash Transactions, Transfers
-   - **Date Period**: Last 365 Days (or your preference)
-   - **Output Format**: CSV
-4. Save and note your **Query ID**
-5. Generate a **Flex Web Service Token** from the same page
-6. In Wealthfolio, go to **Activities > IBKR Settings**
-7. Add a new configuration with your Query ID and Token
-8. Enable "Auto-fetch on portfolio update" for automatic syncing
+2. Navigate to **Reports > Flex Queries > Activity Flex Query**
+3. Click **Create** or **+** to add a new query
+
+#### Step 2: Configure Required Sections
+
+Add the following sections with their required fields:
+
+<details>
+<summary><b>Trades</b> (Required)</summary>
+
+**Options:** Execution
+
+**Required Fields:**
+- ClientAccountID, CurrencyPrimary, FXRateToBase
+- AssetClass, Symbol, Description, ISIN
+- TradeID, DateTime, TradeDate, SettleDateTarget
+- Quantity, TradePrice, Proceeds, Taxes, IBCommission, NetCash
+- Buy/Sell, TransactionID
+
+</details>
+
+<details>
+<summary><b>Cash Transactions</b> (Required)</summary>
+
+**Options:** Dividends, Withholding Tax, 871(m) Withholding, Broker Fees, Deposits & Withdrawals, Detail
+
+**Required Fields:**
+- ClientAccountID, CurrencyPrimary, FXRateToBase
+- AssetClass, Symbol, Description, ISIN
+- Date/Time, SettleDate, Amount, Type
+- TransactionID
+
+</details>
+
+<details>
+<summary><b>Transfers</b> (Required)</summary>
+
+**Options:** Transfer
+
+**Required Fields:**
+- ClientAccountID, CurrencyPrimary, FXRateToBase
+- AssetClass, Symbol, Description, ISIN
+- Date, DateTime, SettleDate
+- Type, Direction, Quantity, TransferPrice
+- TransactionID
+
+</details>
+
+<details>
+<summary><b>Statement of Funds</b> (Optional - for FX conversions)</summary>
+
+**Options:** Base Currency Summary
+
+**Required Fields:**
+- ClientAccountID, CurrencyPrimary, FXRateToBase
+- Symbol, Description, ISIN
+- ReportDate, Date, SettleDate
+- ActivityCode, ActivityDescription
+- Debit, Credit, Amount
+- TransactionID
+
+</details>
+
+#### Step 3: Delivery Configuration
+
+| Setting | Value |
+|---------|-------|
+| **Format** | CSV |
+| **Include header and trailer records?** | No |
+| **Include column headers?** | Yes |
+| **Display single column header row?** | No |
+| **Include section code and line descriptor?** | No |
+| **Period** | Last 365 Calendar Days |
+
+#### Step 4: General Configuration
+
+| Setting | Value |
+|---------|-------|
+| **Date Format** | `yyyy-MM-dd` |
+| **Time Format** | `HHmmss` |
+| **Date/Time Separator** | `' '` (single-space) |
+| **Include Canceled Trades?** | No |
+| **Include Currency Rates?** | No |
+
+#### Step 5: Generate Flex Web Service Token
+
+1. In IBKR Account Management, go to **Reports > Flex Queries**
+2. At the bottom, find **Flex Web Service**
+3. Click **Generate Token** (or view existing token)
+4. Copy and save the token securely
+
+#### Step 6: Configure in Wealthfolio
+
+1. Open Wealthfolio → **Activities > IBKR Settings**
+2. Click **Add Configuration**
+3. Enter your **Query ID** (shown at the top of your Flex Query)
+4. Enter your **Flex Web Service Token**
+5. Give it a name (e.g., "Main Account")
+6. Enable **Auto-fetch on portfolio update** for automatic syncing
 
 ## Import Workflow
 
