@@ -69,7 +69,8 @@ async function checkLocalCache(
       }
     }
   } catch (error) {
-    // Silent fail - cache is optional
+    // Cache errors are non-fatal but should be logged for debugging
+    console.warn(`[Ticker Resolver] Cache read error for ${isin}:${exchange}:`, error instanceof Error ? error.message : String(error));
   }
 
   return null;
@@ -105,7 +106,8 @@ async function saveToLocalCache(
     cache[cacheKey] = entry;
     localStorage.setItem(LOCALSTORAGE_CACHE_KEY, JSON.stringify(cache));
   } catch (error) {
-    // Silent fail - cache is optional
+    // Cache errors are non-fatal but should be logged for debugging
+    console.warn(`[Ticker Resolver] Cache write error for ${isin}:${exchange}:`, error instanceof Error ? error.message : String(error));
   }
 }
 

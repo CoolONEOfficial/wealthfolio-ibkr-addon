@@ -1,7 +1,16 @@
-import type { ActivityImport } from "@wealthfolio/addon-sdk";
+import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
-import type { AccountPreview } from "../types";
+import type { AccountPreview, ProcessedIBKRRow } from "../types";
 import { parseDividendInfo } from "./dividend-utils";
+
+/**
+ * Valid activity types that can be imported to Wealthfolio
+ */
+const VALID_ACTIVITY_TYPES = new Set<ActivityType>([
+  "BUY", "SELL", "DIVIDEND", "INTEREST", "DEPOSIT", "WITHDRAWAL",
+  "ADD_HOLDING", "REMOVE_HOLDING", "TRANSFER_IN", "TRANSFER_OUT",
+  "FEE", "TAX", "SPLIT"
+]);
 
 /**
  * Activity Converter Service
@@ -14,9 +23,10 @@ import { parseDividendInfo } from "./dividend-utils";
 
 /**
  * Map IBKR activity types to Wealthfolio activity types
+ * Returns null if the IBKR type is not recognized (should be skipped)
  */
-function mapActivityType(ibkrType: string): string {
-  const mapping: Record<string, string> = {
+function mapActivityType(ibkrType: string): ActivityType | null {
+  const mapping: Record<string, ActivityType> = {
     "IBKR_BUY": "BUY",
     "IBKR_SELL": "SELL",
     "IBKR_DIVIDEND": "DIVIDEND",
@@ -29,13 +39,17 @@ function mapActivityType(ibkrType: string): string {
     "IBKR_INTEREST": "INTEREST",
   };
 
-  return mapping[ibkrType] || "UNKNOWN";
+  const mapped = mapping[ibkrType];
+  if (mapped && VALID_ACTIVITY_TYPES.has(mapped)) {
+    return mapped;
+  }
+  return null;
 }
 
 /**
  * Parse numeric value from CSV string
  */
-function parseNumeric(value: any): number {
+function parseNumeric(value: string | number | undefined | null): number {
   if (typeof value === "number") return value;
   if (!value) return 0;
 
@@ -59,7 +73,7 @@ interface PositionEntry {
  * Returns a map: symbol -> PositionEntry[] sorted by date
  * Each entry represents the cumulative position after a trade on that date.
  */
-function buildPositionHistory(processedData: any[]): Map<string, PositionEntry[]> {
+function buildPositionHistory(processedData: ProcessedIBKRRow[]): Map<string, PositionEntry[]> {
   const history = new Map<string, PositionEntry[]>();
 
   // Sort transactions by date first
@@ -88,10 +102,12 @@ function buildPositionHistory(processedData: any[]): Map<string, PositionEntry[]
     currentPosition.set(symbol, newPosition);
 
     // Record position entry
-    if (!history.has(symbol)) {
-      history.set(symbol, []);
+    let entries = history.get(symbol);
+    if (!entries) {
+      entries = [];
+      history.set(symbol, entries);
     }
-    history.get(symbol)!.push({ date, quantity: newPosition });
+    entries.push({ date, quantity: newPosition });
   }
 
   return history;
@@ -146,7 +162,7 @@ interface FXRateEntry {
  * Returns a map: "BASE/QUOTE" -> FXRateEntry[] sorted by date
  * e.g., "GBP/USD" -> [{date: "2025-05-07", rate: 1.33}, ...]
  */
-export function buildFXRateLookup(rawData: any[]): Map<string, FXRateEntry[]> {
+export function buildFXRateLookup(rawData: ProcessedIBKRRow[]): Map<string, FXRateEntry[]> {
   const lookup = new Map<string, FXRateEntry[]>();
 
   for (const row of rawData) {
@@ -170,17 +186,21 @@ export function buildFXRateLookup(rawData: any[]): Map<string, FXRateEntry[]> {
     const normalizedDate = date.split(" ")[0];
 
     const key = `${base}/${quote}`;
-    if (!lookup.has(key)) {
-      lookup.set(key, []);
+    let keyEntries = lookup.get(key);
+    if (!keyEntries) {
+      keyEntries = [];
+      lookup.set(key, keyEntries);
     }
-    lookup.get(key)!.push({ date: normalizedDate, rate: tradePrice });
+    keyEntries.push({ date: normalizedDate, rate: tradePrice });
 
     // Also store inverse for reverse lookup
     const inverseKey = `${quote}/${base}`;
-    if (!lookup.has(inverseKey)) {
-      lookup.set(inverseKey, []);
+    let inverseEntries = lookup.get(inverseKey);
+    if (!inverseEntries) {
+      inverseEntries = [];
+      lookup.set(inverseKey, inverseEntries);
     }
-    lookup.get(inverseKey)!.push({ date: normalizedDate, rate: 1 / tradePrice });
+    inverseEntries.push({ date: normalizedDate, rate: 1 / tradePrice });
   }
 
   // Sort each array by date
@@ -262,7 +282,7 @@ function parseTTAXAmount(description: string): number | null {
  * 3. For transaction taxes (TTAX): Use ListingExchange (tax is in security's trading currency)
  * 4. For other cash transactions: Use the base currency (CurrencyPrimary)
  */
-function determineTransactionCurrency(row: any, baseCurrency: string): string {
+function determineTransactionCurrency(row: ProcessedIBKRRow, baseCurrency: string): string {
   const ibkrType = row._IBKR_TYPE || "";
   const activityCode = row.ActivityCode || "";
 
@@ -316,9 +336,7 @@ function determineTransactionCurrency(row: any, baseCurrency: string): string {
  * Convert IBKR CSV rows to ActivityImport format
  */
 export async function convertToActivityImports(
-  // Using 'any' for processedData as it contains dynamically-keyed CSV row data
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  processedData: any[],
+  processedData: ProcessedIBKRRow[],
   accountPreviews: AccountPreview[]
 ): Promise<ActivityImport[]> {
   const activities: ActivityImport[] = [];
@@ -332,8 +350,16 @@ export async function convertToActivityImports(
   for (const row of processedData) {
     try {
       const baseCurrency = row.CurrencyPrimary || "USD";
-      const ibkrType = row._IBKR_TYPE || "UNKNOWN";
+      const ibkrType = row._IBKR_TYPE || "";
       const activityType = mapActivityType(ibkrType);
+
+      // Skip unrecognized activity types
+      if (activityType === null) {
+        if (ibkrType && ibkrType !== "") {
+          console.warn(`Skipping unrecognized IBKR activity type: ${ibkrType} for ${row.Symbol || row.ActivityDescription || "unknown"}`);
+        }
+        continue;
+      }
 
       // Field names from ibkr-preprocessor.ts:
       // - Quantity (for trade shares)
@@ -393,9 +419,11 @@ export async function convertToActivityImports(
               if (fxRate && fxRate > 0) {
                 amount = Math.abs(parseNumeric(row.TradeMoney)) * fxRate;
               } else {
-                // Last resort: use TradeMoney as-is (will be in base currency - incorrect but logged)
+                // Last resort: use TradeMoney as-is and fall back to base currency
+                // This is better than having incorrect currency on the amount
                 amount = Math.abs(parseNumeric(row.TradeMoney));
-                console.warn(`No FX rate or position for ${baseCurrency}/${currency} dividend: ${symbol} on ${txDate}, amount may be incorrect`);
+                currency = baseCurrency;
+                console.warn(`No FX rate or position for ${baseCurrency}/${dividendInfo.currency} dividend: ${symbol} on ${txDate}, using base currency amount`);
               }
             }
           }
@@ -448,8 +476,10 @@ export async function convertToActivityImports(
                 if (fxRate && fxRate > 0) {
                   amount = tradeMoneyBase * fxRate;
                 } else {
+                  // Fall back to base currency when no FX rate available
                   amount = tradeMoneyBase;
-                  console.warn(`No FX rate or position for ${baseCurrency}/${currency} tax: ${symbol} on ${txDate}, amount may be incorrect`);
+                  currency = baseCurrency;
+                  console.warn(`No FX rate or position for ${baseCurrency}/${dividendInfo.currency} tax: ${symbol} on ${txDate}, using base currency amount`);
                 }
               }
             } else {
@@ -458,7 +488,9 @@ export async function convertToActivityImports(
               if (fxRate && fxRate > 0) {
                 amount = tradeMoneyBase * fxRate;
               } else {
+                // Fall back to base currency when no FX rate available
                 amount = tradeMoneyBase;
+                currency = baseCurrency;
               }
             }
           }
@@ -495,9 +527,10 @@ export async function convertToActivityImports(
           if (fxRate && fxRate > 0) {
             amount = tradeMoneyBase * fxRate;
           } else {
-            // Fallback: use TradeMoney as-is (in base currency - may be incorrect)
+            // Fallback: use TradeMoney as-is in base currency
             amount = tradeMoneyBase;
-            console.warn(`No FX rate for ${baseCurrency}/${targetCurrency} OFEE fee on ${txDate}, amount may be incorrect`);
+            currency = baseCurrency;
+            console.warn(`No FX rate for ${baseCurrency}/${targetCurrency} OFEE fee on ${txDate}, using base currency amount`);
           }
         } else {
           amount = Math.abs(parseNumeric(row.TradeMoney));
@@ -522,7 +555,7 @@ export async function convertToActivityImports(
         accountId: "", // Will be set later when grouping by currency
         date: row.Date || row.ReportDate || new Date().toISOString().split("T")[0],
         symbol: row._resolvedTicker || row.Symbol || row.SecurityID || `$CASH-${currency}`,
-        activityType: activityType as any,
+        activityType: activityType,
         quantity: finalQuantity,
         unitPrice: finalUnitPrice,
         currency: currency,

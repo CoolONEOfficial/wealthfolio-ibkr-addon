@@ -119,3 +119,28 @@ export async function saveToken(secrets: SecretsAPI, token: string): Promise<voi
 export async function deleteToken(secrets: SecretsAPI): Promise<void> {
   await secrets.delete(SECRET_FLEX_TOKEN);
 }
+
+/**
+ * Update config status atomically (re-loads configs to avoid race conditions)
+ * This is safer than modifying a stale config object and saving all configs
+ */
+export async function updateConfigStatus(
+  secrets: SecretsAPI,
+  id: string,
+  status: {
+    lastFetchTime?: string;
+    lastFetchStatus?: "success" | "error";
+    lastFetchError?: string;
+  }
+): Promise<void> {
+  // Atomically load and update to avoid race conditions
+  const configs = await loadConfigs(secrets);
+  const index = configs.findIndex((c) => c.id === id);
+  if (index === -1) {
+    console.warn(`[Flex Config] Cannot update status: config ${id} not found`);
+    return;
+  }
+
+  configs[index] = { ...configs[index], ...status };
+  await saveConfigs(secrets, configs);
+}

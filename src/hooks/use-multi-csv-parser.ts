@@ -91,19 +91,43 @@ export function useMultiCsvParser() {
       });
 
       try {
-        // Read all files as text
-        const fileContents = await Promise.all(
+        // Read all files as text (handle individual file read errors)
+        const fileReadResults = await Promise.all(
           files.map(async (file) => {
-            const text = await file.text();
-            return { file, text };
+            try {
+              const text = await file.text();
+              return { file, text, error: null };
+            } catch (readError) {
+              return {
+                file,
+                text: null,
+                error: readError instanceof Error ? readError.message : String(readError)
+              };
+            }
           })
         );
+
+        // Separate successful reads from errors
+        const allErrors: CsvRowError[] = [];
+        const fileContents: { file: File; text: string }[] = [];
+
+        for (const result of fileReadResults) {
+          if (result.error || result.text === null) {
+            allErrors.push({
+              type: "FieldMismatch",
+              code: "UndetectableDelimiter",
+              message: `Failed to read file "${result.file.name}": ${result.error || "Unknown error"}`,
+              row: 0,
+            });
+          } else {
+            fileContents.push({ file: result.file, text: result.text });
+          }
+        }
 
         // Process and merge all IBKR CSV sections
         let mergedData: CsvRowData[] = [];
         let mergedHeaders: string[] = [];
         const fileInfos: FileInfo[] = [];
-        const allErrors: CsvRowError[] = [];
 
         for (const { file, text } of fileContents) {
           try {
@@ -139,6 +163,22 @@ export function useMultiCsvParser() {
             });
 
             const rawCsvLines = parseResult.data;
+
+            // Handle PapaParse errors (malformed CSV, delimiter issues, etc.)
+            if (parseResult.errors && parseResult.errors.length > 0) {
+              for (const parseError of parseResult.errors) {
+                allErrors.push({
+                  type: parseError.type || "FieldMismatch",
+                  code: parseError.code || "UndetectableDelimiter",
+                  message: `${file.name}: ${parseError.message || "Parse error"}`,
+                  row: parseError.row ?? 0,
+                });
+              }
+              // If there are fatal parse errors and no data, skip this file
+              if (rawCsvLines.length === 0) {
+                continue;
+              }
+            }
 
             if (rawCsvLines.length === 0) {
               const errorMsg = `The file ${file.name} appears to be empty.`;

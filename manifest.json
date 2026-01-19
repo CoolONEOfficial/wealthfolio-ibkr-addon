@@ -6,7 +6,7 @@
   "author": "Nikolai Trukhin",
   "sdkVersion": "2.0.0",
   "main": "dist/addon.js",
-  "enabled": false,
+  "enabled": true,
   "permissions": [
     {
       "category": "accounts",

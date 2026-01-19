@@ -11,11 +11,51 @@
  * - GetStatement endpoint: /GetStatement?t={TOKEN}&q={REFERENCE_CODE}&v=3
  */
 
-import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS } from "./constants";
+import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS, FLEX_QUERY_ABSOLUTE_TIMEOUT_MS } from "./constants";
 
 export interface FlexQueryConfig {
   token: string;
   queryId: string;
+}
+
+/**
+ * Validate IBKR Flex Query token format
+ * IBKR tokens are typically 32+ character alphanumeric strings
+ */
+export function validateFlexToken(token: string): { valid: boolean; error?: string } {
+  if (!token || typeof token !== "string") {
+    return { valid: false, error: "Token is required" };
+  }
+  const trimmed = token.trim();
+  if (trimmed.length < 16) {
+    return { valid: false, error: "Token appears too short (minimum 16 characters)" };
+  }
+  if (trimmed.length > 128) {
+    return { valid: false, error: "Token appears too long (maximum 128 characters)" };
+  }
+  // IBKR tokens are alphanumeric
+  if (!/^[a-zA-Z0-9]+$/.test(trimmed)) {
+    return { valid: false, error: "Token should contain only alphanumeric characters" };
+  }
+  return { valid: true };
+}
+
+/**
+ * Validate IBKR Flex Query ID format
+ * Query IDs are numeric identifiers
+ */
+export function validateQueryId(queryId: string): { valid: boolean; error?: string } {
+  if (!queryId || typeof queryId !== "string") {
+    return { valid: false, error: "Query ID is required" };
+  }
+  const trimmed = queryId.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return { valid: false, error: "Query ID should be numeric" };
+  }
+  if (trimmed.length > 20) {
+    return { valid: false, error: "Query ID appears too long" };
+  }
+  return { valid: true };
 }
 
 export interface FlexQueryRequestResult {
@@ -286,6 +326,8 @@ function delay(ms: number): Promise<void> {
  * 2. Polls for statement availability (with exponential backoff)
  * 3. Returns the statement XML or error
  *
+ * Has both retry-based and absolute timeout protection to prevent hanging.
+ *
  * @param config Flex Query configuration
  * @param options Polling options
  * @returns Promise resolving to Flex Query result
@@ -296,6 +338,7 @@ export async function fetchFlexQuery(
     maxRetries?: number;
     initialDelayMs?: number;
     maxDelayMs?: number;
+    absoluteTimeoutMs?: number;
     onProgress?: (message: string) => void;
   } = {}
 ): Promise<FlexQueryResult> {
@@ -303,8 +346,11 @@ export async function fetchFlexQuery(
     maxRetries = 10,
     initialDelayMs = FLEX_QUERY_INITIAL_DELAY_MS,
     maxDelayMs = FLEX_QUERY_MAX_DELAY_MS,
+    absoluteTimeoutMs = FLEX_QUERY_ABSOLUTE_TIMEOUT_MS,
     onProgress,
   } = options;
+
+  const startTime = Date.now();
 
   // Step 1: Send request
   onProgress?.("Sending Flex Query request...");
@@ -320,12 +366,23 @@ export async function fetchFlexQuery(
 
   onProgress?.(`Request accepted. Reference: ${requestResult.referenceCode}`);
 
-  // Step 2: Poll for statement
+  // Step 2: Poll for statement with both retry limit and absolute timeout
   let currentDelay = initialDelayMs;
   let retries = 0;
 
   while (retries < maxRetries) {
-    onProgress?.(`Waiting for statement (attempt ${retries + 1}/${maxRetries})...`);
+    // Check absolute timeout
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= absoluteTimeoutMs) {
+      onProgress?.("Operation timed out");
+      return {
+        success: false,
+        error: `Absolute timeout exceeded (${Math.round(absoluteTimeoutMs / 1000)}s). IBKR may be experiencing delays.`,
+      };
+    }
+
+    const remainingTime = absoluteTimeoutMs - elapsed;
+    onProgress?.(`Waiting for statement (attempt ${retries + 1}/${maxRetries}, ${Math.round(remainingTime / 1000)}s remaining)...`);
     await delay(currentDelay);
 
     const statementResult = await getFlexStatement(config, requestResult.referenceCode);
@@ -361,7 +418,7 @@ export async function fetchFlexQuery(
 
   return {
     success: false,
-    error: "Timeout waiting for statement generation",
+    error: "Max retries exceeded waiting for statement generation",
   };
 }
 

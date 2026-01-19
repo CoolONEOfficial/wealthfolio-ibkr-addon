@@ -1,5 +1,8 @@
 import React from 'react';
 import type { AddonContext, Account } from '@wealthfolio/addon-sdk';
+
+// Use the host app's toast function (exposed on window) to ensure toasts appear in the main Toaster
+const getToast = () => (window as unknown as { __wealthfolio_toast__?: typeof import('sonner').toast }).__wealthfolio_toast__;
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import IBKRMultiImportPage from './pages/ibkr-multi-import-page';
 import IBKRFlexSettingsPage from './pages/ibkr-flex-settings-page';
@@ -7,8 +10,8 @@ import { fetchFlexQuery, setHttpClient } from './lib/flex-query-fetcher';
 import { parseFlexQueryCSV } from './lib/flex-csv-parser';
 import {
   loadConfigs,
-  saveConfigs,
   loadToken,
+  updateConfigStatus,
 } from './lib/flex-config-storage';
 import { detectCurrenciesFromIBKR } from './lib/currency-detector';
 import { generateAccountNames } from './lib/account-name-generator';
@@ -16,7 +19,7 @@ import { preprocessIBKRData } from './lib/ibkr-preprocessor';
 import { convertToActivityImports } from './lib/activity-converter';
 import { deduplicateActivities } from './lib/activity-deduplicator';
 import { AsyncLock } from './lib/async-lock';
-import { QUERY_STALE_TIME_MS } from './lib/constants';
+import { QUERY_STALE_TIME_MS, AUTO_FETCH_DEBOUNCE_MS } from './lib/constants';
 import {
   isConfigInCooldown,
   createActivityFingerprintGetter,
@@ -27,6 +30,37 @@ import {
 
 // Lock for preventing concurrent auto-fetch operations
 const autoFetchLock = new AsyncLock();
+
+/**
+ * Create a debounced version of a function with cleanup support
+ * Multiple calls within the delay period consolidate into one call after the delay
+ * Returns both the debounced function and a cleanup function to cancel pending timeouts
+ */
+function createDebouncedFunction<T extends (...args: unknown[]) => void>(
+  fn: T,
+  delayMs: number
+): { debounced: (...args: Parameters<T>) => void; cleanup: () => void } {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const debounced = (...args: Parameters<T>) => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    timeoutId = setTimeout(() => {
+      timeoutId = null;
+      fn(...args);
+    }, delayMs);
+  };
+
+  const cleanup = () => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  return { debounced, cleanup };
+}
 
 // Create a shared QueryClient for addon pages that use React Query
 const queryClient = new QueryClient({
@@ -61,27 +95,34 @@ export function enable(ctx: AddonContext) {
   // Cleanup functions to call on disable
   const cleanupFunctions: (() => void)[] = [];
 
-  // Wrap components to provide context
-  // Settings page uses React Query hooks, so it needs QueryClientProvider
-  const ImportPageWithContext: React.ComponentType = () => <IBKRMultiImportPage ctx={ctx} />;
-  const SettingsPageWithContext: React.ComponentType = () => (
-    <QueryClientProvider client={queryClient}>
-      <IBKRFlexSettingsPage ctx={ctx} />
-    </QueryClientProvider>
+  // Create lazy-loaded components that match SDK's expected type
+  // React.lazy() returns LazyExoticComponent which is what the router expects
+  const LazyImportPage = React.lazy(() =>
+    Promise.resolve({
+      default: () => <IBKRMultiImportPage ctx={ctx} />,
+    })
+  );
+
+  const LazySettingsPage = React.lazy(() =>
+    Promise.resolve({
+      default: () => (
+        <QueryClientProvider client={queryClient}>
+          <IBKRFlexSettingsPage ctx={ctx} />
+        </QueryClientProvider>
+      ),
+    })
   );
 
   // Register the import page route
-  // Note: SDK router expects LazyExoticComponent but we use regular components
-  // Using 'unknown' cast for type compatibility with SDK internals
   ctx.router.add({
     path: 'activities/import/ibkr-multi',
-    component: ImportPageWithContext as unknown as React.LazyExoticComponent<React.ComponentType<unknown>>,
+    component: LazyImportPage,
   });
 
   // Register the settings page route
   ctx.router.add({
     path: 'settings/ibkr-flex',
-    component: SettingsPageWithContext as unknown as React.LazyExoticComponent<React.ComponentType<unknown>>,
+    component: LazySettingsPage,
   });
 
   // Add sidebar item for import
@@ -184,6 +225,9 @@ export function enable(ctx: AddonContext) {
 
       // Process each enabled config
       for (const config of enabledConfigs) {
+        // Create a toast ID for this config to update it later
+        const toastId = `ibkr-fetch-${config.id}`;
+
         try {
           // Check per-config cooldown
           const cooldownCheck = isConfigInCooldown(config.lastFetchTime);
@@ -193,6 +237,10 @@ export function enable(ctx: AddonContext) {
           }
 
           ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Starting...`);
+
+          // Show loading toast
+          const toast = getToast();
+          toast?.loading(`IBKR: Fetching ${config.name}...`, { id: toastId });
 
           // 1. Fetch CSV from IBKR
           const result = await fetchFlexQuery(
@@ -212,13 +260,17 @@ export function enable(ctx: AddonContext) {
 
           if (parsed.rows.length === 0) {
             ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: No transactions found`);
-            // Update status even for empty results
-            Object.assign(config, createSuccessStatus());
+            // Update status even for empty results (atomically to avoid race conditions)
             try {
-              await saveConfigs(ctx.api.secrets, configs);
+              await updateConfigStatus(ctx.api.secrets, config.id, createSuccessStatus());
             } catch (saveError) {
               ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save status`);
             }
+            // Show info toast for no new transactions
+            getToast()?.success(`IBKR: ${config.name}`, {
+              id: toastId,
+              description: "No new transactions found",
+            });
             continue;
           }
 
@@ -285,24 +337,35 @@ export function enable(ctx: AddonContext) {
             }
           }
 
-          // 6. Update config status
-          Object.assign(config, createSuccessStatus());
+          // 6. Update config status (atomically to avoid race conditions)
           try {
-            await saveConfigs(ctx.api.secrets, configs);
+            await updateConfigStatus(ctx.api.secrets, config.id, createSuccessStatus());
           } catch (saveError) {
             ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save success status`);
           }
 
-          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Complete - ${formatImportResultMessage(totalImported, totalSkipped)}`);
+          const resultMessage = formatImportResultMessage(totalImported, totalSkipped);
+          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Complete - ${resultMessage}`);
+
+          // Show success toast
+          getToast()?.success(`IBKR: ${config.name}`, {
+            id: toastId,
+            description: resultMessage,
+          });
 
         } catch (error) {
           const errorStatus = createErrorStatus(error);
           ctx.api.logger?.error(`IBKR auto-fetch [${config.name}]: Error - ${errorStatus.lastFetchError}`);
 
-          // Update config with error status
-          Object.assign(config, errorStatus);
+          // Show error toast
+          getToast()?.error(`IBKR: ${config.name} failed`, {
+            id: toastId,
+            description: errorStatus.lastFetchError,
+          });
+
+          // Update config with error status (atomically to avoid race conditions)
           try {
-            await saveConfigs(ctx.api.secrets, configs);
+            await updateConfigStatus(ctx.api.secrets, config.id, errorStatus);
           } catch (saveError) {
             ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save error status`);
           }
@@ -318,13 +381,28 @@ export function enable(ctx: AddonContext) {
   };
 
   // Register event listener for portfolio updates (if events API is available)
+  // Use debounce to consolidate rapid portfolio update events into one fetch attempt
+  // This prevents race conditions where multiple events fire before the first completes
   if (ctx.api.events?.portfolio?.onUpdateComplete) {
-    ctx.api.events.portfolio.onUpdateComplete(performAutoFetch).then((unlisten) => {
-      cleanupFunctions.push(unlisten);
-      ctx.api.logger?.trace("IBKR addon: Registered portfolio update listener");
-    }).catch((error) => {
-      ctx.api.logger?.warn(`IBKR addon: Failed to register event listener: ${error}`);
-    });
+    const { debounced: debouncedAutoFetch, cleanup: cleanupDebounce } = createDebouncedFunction(
+      performAutoFetch,
+      AUTO_FETCH_DEBOUNCE_MS
+    );
+
+    // Add debounce cleanup to run on disable
+    cleanupFunctions.push(cleanupDebounce);
+
+    // Register event listener - use void to explicitly mark fire-and-forget
+    // and handle errors synchronously to prevent unhandled rejections
+    void ctx.api.events.portfolio.onUpdateComplete(debouncedAutoFetch)
+      .then((unlisten) => {
+        cleanupFunctions.push(unlisten);
+        ctx.api.logger?.trace(`IBKR addon: Registered portfolio update listener (${AUTO_FETCH_DEBOUNCE_MS}ms debounce)`);
+      })
+      .catch((error) => {
+        // Log but don't rethrow - addon should continue working even if event registration fails
+        ctx.api.logger?.warn(`IBKR addon: Failed to register event listener: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   // Return cleanup function

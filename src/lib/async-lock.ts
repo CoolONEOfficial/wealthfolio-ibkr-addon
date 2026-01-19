@@ -46,8 +46,19 @@ export class AsyncLock {
   private release(): void {
     if (this.queue.length > 0) {
       // Give lock to next waiter
-      const next = this.queue.shift()!;
-      next();
+      const next = this.queue.shift();
+      if (next) {
+        try {
+          next();
+        } catch (error) {
+          // If the callback throws, still release the lock to prevent deadlock
+          console.error("[AsyncLock] Queue callback error:", error);
+          this.locked = false;
+        }
+      } else {
+        // Shouldn't happen but handle defensively
+        this.locked = false;
+      }
     } else {
       this.locked = false;
     }

@@ -3,6 +3,21 @@ import { normalizeNumericValue } from "./validation-utils";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
 
 /**
+ * Convert CsvRowData to IBKRTransactionRow type.
+ *
+ * This is a safe type assertion because:
+ * - CsvRowData is Record<string, string | undefined>
+ * - IBKRTransactionRow has all optional string properties
+ * - Missing IBKR fields will be undefined (which is allowed)
+ *
+ * The CSV parser produces generic rows, but this preprocessor
+ * specifically handles IBKR data where the field names match.
+ */
+function asIBKRRow(row: CsvRowData): IBKRTransactionRow {
+  return row as IBKRTransactionRow;
+}
+
+/**
  * IBKR Transaction Preprocessor
  *
  * Handles IBKR-specific CSV preprocessing before validation:
@@ -573,7 +588,7 @@ function getDateField(row: IBKRTransactionRow): string | undefined {
 function getDividendAmount(row: IBKRTransactionRow): string | undefined {
   const tradeDate = row.TradeDate?.trim();
   const netCash = row.NetCash?.trim();
-  const amount = (row as any).Amount?.trim();
+  const amount = row.Amount?.trim();
   const tradeMoney = row.TradeMoney?.trim();
 
   // Check Amount field first (Section 2 dividends have amount here)
@@ -611,7 +626,7 @@ export function preprocessIBKRData(data: CsvRowData[]): {
   const classifications = new Map<string, number>();
 
   for (const row of data) {
-    const ibkrRow = row as unknown as IBKRTransactionRow;
+    const ibkrRow = asIBKRRow(row);
     const classification = classifyIBKRTransaction(ibkrRow);
 
     // Track classification stats
@@ -644,19 +659,19 @@ export function preprocessIBKRData(data: CsvRowData[]): {
       // For dividends/taxes, use special extraction logic due to shifted columns
       if (["DIVIDEND_PAYMENT", "DIVIDEND_TAX"].includes(classification.classification)) {
         // Get dividend amount from correct column (TradeDate for dividend rows)
-        const dividendAmount = getDividendAmount(row as unknown as IBKRTransactionRow);
+        const dividendAmount = getDividendAmount(ibkrRow);
         if (dividendAmount) {
           processedRow.TradeMoney = dividendAmount;
         }
 
         // Get correct exchange name (ListingExchange for dividend rows)
-        const exchange = getExchangeField(row as unknown as IBKRTransactionRow);
+        const exchange = getExchangeField(ibkrRow);
         if (exchange) {
           processedRow.Exchange = exchange;
         }
 
         // Get correct date (DateTime for dividend rows)
-        const date = getDateField(row as unknown as IBKRTransactionRow);
+        const date = getDateField(ibkrRow);
         if (date) {
           processedRow.TradeDate = date;
         }

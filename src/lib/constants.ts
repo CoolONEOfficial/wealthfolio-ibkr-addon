@@ -31,6 +31,12 @@ export const FLEX_QUERY_INITIAL_DELAY_MS = 2000;
 export const FLEX_QUERY_MAX_DELAY_MS = 30000;
 
 /**
+ * Absolute timeout for Flex Query fetch operation (2 minutes)
+ * Prevents hanging indefinitely if IBKR is slow to generate statements
+ */
+export const FLEX_QUERY_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
  * Timeout for external API requests (10 seconds)
  */
 export const API_REQUEST_TIMEOUT_MS = 10000;
@@ -51,3 +57,9 @@ export const MAX_FILES = 20;
  * Maximum number of debug logs to show in deduplication
  */
 export const MAX_DEBUG_LOGS = 5;
+
+/**
+ * Debounce delay for auto-fetch trigger (5 seconds)
+ * Multiple portfolio update events within this window consolidate into one fetch
+ */
+export const AUTO_FETCH_DEBOUNCE_MS = 5000;

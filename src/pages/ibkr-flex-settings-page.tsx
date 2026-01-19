@@ -69,19 +69,21 @@ const IBKRFlexSettingsPage: React.FC<IBKRFlexSettingsPageProps> = ({ ctx }) => {
   const saveTokenMutation = useSaveToken(secrets);
 
   // Load accounts to get existing groups
+  const accountsApi = ctx?.api?.accounts;
+  const logger = ctx?.api?.logger;
   useEffect(() => {
     const loadAccounts = async () => {
-      if (!ctx?.api?.accounts) return;
+      if (!accountsApi) return;
       try {
-        const accounts: Account[] = await ctx.api.accounts.getAll();
+        const accounts: Account[] = await accountsApi.getAll();
         const groups = [...new Set(accounts.map((a) => a.group).filter(Boolean))] as string[];
         setExistingGroups(groups.sort());
       } catch (e) {
-        console.error("Failed to load accounts:", e);
+        logger?.error?.(`Failed to load accounts: ${e instanceof Error ? e.message : String(e)}`);
       }
     };
     loadAccounts();
-  }, [ctx]);
+  }, [accountsApi, logger]);
 
   // Sync token input with saved token
   useEffect(() => {

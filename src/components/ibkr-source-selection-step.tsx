@@ -6,54 +6,69 @@ import { AccountGroupSuggestions } from "./account-group-suggestions";
 
 export type DataSource = "flexquery" | "manual";
 
-interface IBKRSourceSelectionStepProps {
-  // Account group
+/** Grouped props for account group configuration */
+export interface AccountGroupConfig {
   groupName: string;
   setGroupName: (name: string) => void;
   existingGroups: string[];
+}
 
-  // Data source
-  dataSource: DataSource;
-  setDataSource: (source: DataSource) => void;
-
-  // Flex Query credentials
-  flexToken: string;
-  setFlexToken: (token: string) => void;
-  flexQueryId: string;
-  setFlexQueryId: (id: string) => void;
+/** Grouped props for Flex Query credentials */
+export interface FlexQueryConfig {
+  token: string;
+  setToken: (token: string) => void;
+  queryId: string;
+  setQueryId: (id: string) => void;
   showToken: boolean;
   setShowToken: (show: boolean) => void;
   rememberCredentials: boolean;
   setRememberCredentials: (remember: boolean) => void;
+}
 
-  // Manual CSV
-  selectedFiles: File[];
-  setSelectedFiles: (files: File[]) => void;
+/** Grouped props for CSV file selection */
+export interface CsvFilesConfig {
+  files: File[];
+  setFiles: (files: File[]) => void;
+}
 
-  // Actions
+interface IBKRSourceSelectionStepProps {
+  /** Account group configuration */
+  accountGroup: AccountGroupConfig;
+  /** Data source selection */
+  dataSource: DataSource;
+  setDataSource: (source: DataSource) => void;
+  /** Flex Query credentials */
+  flexQuery: FlexQueryConfig;
+  /** CSV file selection */
+  csvFiles: CsvFilesConfig;
+  /** Loading state */
   isLoading: boolean;
+  /** Proceed to next step */
   onNext: () => void;
 }
 
 export const IBKRSourceSelectionStep: React.FC<IBKRSourceSelectionStepProps> = ({
-  groupName,
-  setGroupName,
-  existingGroups,
+  accountGroup,
   dataSource,
   setDataSource,
-  flexToken,
-  setFlexToken,
-  flexQueryId,
-  setFlexQueryId,
-  showToken,
-  setShowToken,
-  rememberCredentials,
-  setRememberCredentials,
-  selectedFiles,
-  setSelectedFiles,
+  flexQuery,
+  csvFiles,
   isLoading,
   onNext,
 }) => {
+  // Destructure grouped props for convenience
+  const { groupName, setGroupName, existingGroups } = accountGroup;
+  const {
+    token: flexToken,
+    setToken: setFlexToken,
+    queryId: flexQueryId,
+    setQueryId: setFlexQueryId,
+    showToken,
+    setShowToken,
+    rememberCredentials,
+    setRememberCredentials,
+  } = flexQuery;
+  const { files: selectedFiles, setFiles: setSelectedFiles } = csvFiles;
   const hasGroupName = groupName.trim().length > 0;
   const hasFlexCredentials = flexToken.trim().length > 0 && flexQueryId.trim().length > 0;
   const hasFiles = selectedFiles.length > 0;

@@ -3,13 +3,16 @@ import type { Account, AddonContext, ActivityImport } from "@wealthfolio/addon-s
 import React, { useState, useEffect } from "react";
 import { detectCurrenciesFromIBKR } from "../lib/currency-detector";
 import { generateAccountNames } from "../lib/account-name-generator";
-import { preprocessIBKRData } from "../lib/ibkr-preprocessor";
-import { splitFXConversions } from "../lib/fx-transaction-splitter";
-import { resolveTickersFromIBKR } from "../lib/ticker-resolution-service";
-import { convertToActivityImports } from "../lib/activity-converter";
-import { fetchFlexQuery, setHttpClient } from "../lib/flex-query-fetcher";
+import { fetchFlexQuery, setHttpClient, validateFlexToken, validateQueryId } from "../lib/flex-query-fetcher";
 import { parseFlexQueryCSV } from "../lib/flex-csv-parser";
-import { filterDuplicateActivities } from "../lib/activity-deduplicator";
+import {
+  refreshAndUpdateAccountPreviews,
+  processAndResolveData,
+  fetchExistingActivitiesForDedup,
+  deduplicateActivities,
+  groupActivitiesByCurrency,
+  createTransactionGroups,
+} from "../lib/import-orchestrator";
 import StepIndicator from "../components/step-indicator";
 import { useMultiCsvParser } from "../hooks/use-multi-csv-parser";
 import { IBKRSourceSelectionStep, DataSource } from "../components/ibkr-source-selection-step";
@@ -17,7 +20,7 @@ import { IBKRCurrencyPreviewStep } from "../components/ibkr-currency-preview-ste
 import { IBKRTickerPreviewStep } from "../components/ibkr-ticker-preview-step";
 import { IBKRImportResultsStep } from "../components/ibkr-import-results-step";
 import { CsvRowData } from "../presets/types";
-import type { AccountPreview, TransactionGroup, ImportResult, ActivityFingerprint, ProgressInfo } from "../types";
+import type { AccountPreview, TransactionGroup, ImportResult, ProgressInfo } from "../types";
 
 // Secret keys for stored credentials
 const SECRET_FLEX_TOKEN = "flex_token";
@@ -165,12 +168,23 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
           throw new Error(result.error || "Failed to fetch data from IBKR");
         }
 
-        // Save credentials if requested
+        // Save credentials if requested (with validation)
         if (rememberCredentials && ctx?.api?.secrets) {
-          await Promise.all([
-            ctx.api.secrets.set(SECRET_FLEX_TOKEN, flexToken),
-            ctx.api.secrets.set(SECRET_QUERY_ID, flexQueryId),
-          ]);
+          const tokenValidation = validateFlexToken(flexToken);
+          const queryIdValidation = validateQueryId(flexQueryId);
+
+          if (tokenValidation.valid && queryIdValidation.valid) {
+            await Promise.all([
+              ctx.api.secrets.set(SECRET_FLEX_TOKEN, flexToken.trim()),
+              ctx.api.secrets.set(SECRET_QUERY_ID, flexQueryId.trim()),
+            ]);
+          } else {
+            // Log validation failures but don't block the import
+            console.warn("Credential validation failed, not saving:", {
+              tokenError: tokenValidation.error,
+              queryIdError: queryIdValidation.error,
+            });
+          }
         }
 
         // Parse the fetched CSV
@@ -249,129 +263,88 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     setIsResolving(true);
     setCurrentStep(3);
 
+    const errors: string[] = [];
+    let updatedPreviews = accountPreviews;
+    let activitiesWithFX: ActivityImport[] = [];
+
+    // 1. Refresh accounts and update previews
     try {
-      // Refresh accounts to pick up any newly created accounts
-      // This is critical for deduplication when doing multiple imports
-      let freshAccounts = accounts;
-      if (ctx?.api?.accounts) {
-        try {
-          freshAccounts = await ctx.api.accounts.getAll();
-          setAccounts(freshAccounts);
-        } catch (e) {
-          console.warn("Failed to refresh accounts, using cached list:", e);
-        }
-      }
-
-      // Update accountPreviews with fresh account data
-      // This ensures existingAccount is set correctly for deduplication
-      const updatedPreviews = accountPreviews.map(preview => {
-        const existingAccount = freshAccounts.find(
-          (a) => a.name === preview.name && a.currency === preview.currency
-        );
-        return { ...preview, existingAccount };
-      });
+      const result = await refreshAndUpdateAccountPreviews(
+        ctx?.api?.accounts,
+        accountPreviews,
+        accounts
+      );
+      setAccounts(result.freshAccounts);
+      updatedPreviews = result.updatedPreviews;
       setAccountPreviews(updatedPreviews);
+    } catch (error) {
+      const msg = `Failed to refresh accounts: ${error instanceof Error ? error.message : String(error)}`;
+      console.error(msg);
+      errors.push(msg);
+      // Continue with existing accounts - non-fatal
+    }
 
-      const { processedData } = preprocessIBKRData(parsedData);
-
-      // Pass the search function from addon context for ticker resolution
-      const searchFn = ctx?.api?.market?.searchTicker;
-      const resolvedData = await resolveTickersFromIBKR(
-        processedData,
-        (current, total) => setResolutionProgress({ current, total }),
-        searchFn
+    // 2. Process data, resolve tickers, convert to activities
+    try {
+      activitiesWithFX = await processAndResolveData(
+        parsedData,
+        updatedPreviews,
+        ctx?.api?.market?.searchTicker,
+        (current, total) => setResolutionProgress({ current, total })
       );
-
-      const activities = await convertToActivityImports(resolvedData, updatedPreviews);
-      const accountsByCurrency = new Map<string, Account>(
-        updatedPreviews
-          .filter(p => p.existingAccount)
-          .map(p => [p.currency as string, p.existingAccount as Account])
-      );
-      const withFXSplit = splitFXConversions(activities, accountsByCurrency);
-
-      // === CONSOLIDATED DEDUPLICATION ===
-      // Fetch all existing activities from all existing accounts upfront
-      // This allows us to deduplicate against both:
-      // 1. Duplicates within the batch (e.g., overlapping CSV files)
-      // 2. Duplicates against existing DB activities (e.g., reimporting)
-      let allExistingActivities: ActivityFingerprint[] = [];
-
-      if (ctx?.api?.activities) {
-        const existingAccounts = updatedPreviews.filter(p => p.existingAccount);
-        for (const preview of existingAccounts) {
-          try {
-            const accountActivities = await ctx.api.activities.getAll(preview.existingAccount!.id);
-            const mapped: ActivityFingerprint[] = accountActivities.map((a) => ({
-              // Convert Date to ISO string for deduplication fingerprinting
-              activityDate: a.date instanceof Date ? a.date.toISOString().split('T')[0] : String(a.date),
-              assetId: a.assetSymbol,
-              activityType: a.activityType,
-              quantity: a.quantity,
-              unitPrice: a.unitPrice,
-              amount: a.amount,
-              fee: a.fee,
-              currency: a.currency,
-              comment: a.comment,
-            }));
-            allExistingActivities = allExistingActivities.concat(mapped);
-          } catch (e) {
-            console.warn(`Failed to fetch existing activities for ${preview.currency}:`, e);
-          }
-        }
-      }
-
-      // Single deduplication pass: catches both batch duplicates AND DB duplicates
-      const { unique: dedupedActivities, duplicates: allDuplicates } = filterDuplicateActivities(
-        withFXSplit,
-        allExistingActivities
-      );
-
-      if (allDuplicates.length > 0) {
-        console.log(`[Dedup] Removed ${allDuplicates.length} duplicate activities`);
-        console.log(`[Dedup] By type:`, allDuplicates.reduce((acc, d) => {
-          const key = `${d.currency}-${d.activityType}`;
-          acc[key] = (acc[key] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>));
-      }
-
-      // Group by currency (using deduplicated activities)
-      const groupedByCurrency = new Map<string, ActivityImport[]>();
-      dedupedActivities.forEach((activity) => {
-        const currency = activity.currency || "USD";
-        if (!groupedByCurrency.has(currency)) {
-          groupedByCurrency.set(currency, []);
-        }
-        groupedByCurrency.get(currency)?.push(activity);
-      });
-
-      // Create transaction groups
-      const groups: TransactionGroup[] = updatedPreviews.map((preview) => {
-        const transactions = groupedByCurrency.get(preview.currency) || [];
-        return {
-          currency: preview.currency,
-          accountName: preview.name,
-          transactions,
-          summary: {
-            trades: transactions.filter((t) => t.activityType?.includes("BUY") || t.activityType?.includes("SELL")).length,
-            dividends: transactions.filter((t) => t.activityType?.includes("DIVIDEND")).length,
-            deposits: transactions.filter((t) => t.activityType === "DEPOSIT" || t.activityType === "TRANSFER_IN").length,
-            withdrawals: transactions.filter((t) => t.activityType === "WITHDRAWAL" || t.activityType === "TRANSFER_OUT").length,
-            fees: transactions.filter((t) => t.activityType?.includes("FEE")).length,
-            // Cast to string for comparison since activityType might have values not in SDK enum
-            other: transactions.filter((t) => !t.activityType || (t.activityType as string) === "UNKNOWN").length,
-          },
-        };
-      });
-
-      setTransactionGroups(groups);
+    } catch (error) {
+      const msg = `Failed to process transactions: ${error instanceof Error ? error.message : String(error)}`;
+      console.error(msg);
+      errors.push(msg);
+      // This is fatal - cannot continue without activities
       setResolutionProgress(undefined);
       setIsResolving(false);
-    } catch (error) {
-      console.error("Error processing transactions:", error);
-      setIsResolving(false);
+      return;
     }
+
+    // 3. Fetch existing activities for deduplication
+    let existingActivities: import("../types").ActivityFingerprint[] = [];
+    try {
+      existingActivities = await fetchExistingActivitiesForDedup(
+        ctx?.api?.activities,
+        updatedPreviews
+      );
+    } catch (error) {
+      const msg = `Failed to fetch existing activities for deduplication: ${error instanceof Error ? error.message : String(error)}`;
+      console.warn(msg);
+      errors.push(msg);
+      // Continue without deduplication - non-fatal but may create duplicates
+    }
+
+    // 4. Deduplicate activities
+    let dedupedActivities = activitiesWithFX;
+    try {
+      dedupedActivities = deduplicateActivities(activitiesWithFX, existingActivities);
+    } catch (error) {
+      const msg = `Deduplication failed, proceeding without: ${error instanceof Error ? error.message : String(error)}`;
+      console.warn(msg);
+      errors.push(msg);
+      // Continue with original activities - non-fatal but may create duplicates
+    }
+
+    // 5. Group by currency and create transaction groups
+    try {
+      const groupedByCurrency = groupActivitiesByCurrency(dedupedActivities);
+      const groups = createTransactionGroups(updatedPreviews, groupedByCurrency);
+      setTransactionGroups(groups);
+    } catch (error) {
+      const msg = `Failed to group transactions: ${error instanceof Error ? error.message : String(error)}`;
+      console.error(msg);
+      errors.push(msg);
+    }
+
+    // Log any accumulated warnings
+    if (errors.length > 0) {
+      console.warn(`Import preparation completed with ${errors.length} warning(s):`, errors);
+    }
+
+    setResolutionProgress(undefined);
+    setIsResolving(false);
   };
 
   // Step 3 → Step 4: Import transactions
@@ -429,10 +402,12 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
           const transactionsByCurrency = new Map<string, ActivityImport[]>();
           for (const txn of group.transactions) {
             const txnCurrency = txn.currency || group.currency;
-            if (!transactionsByCurrency.has(txnCurrency)) {
-              transactionsByCurrency.set(txnCurrency, []);
+            let currencyGroup = transactionsByCurrency.get(txnCurrency);
+            if (!currencyGroup) {
+              currencyGroup = [];
+              transactionsByCurrency.set(txnCurrency, currencyGroup);
             }
-            transactionsByCurrency.get(txnCurrency)!.push(txn);
+            currencyGroup.push(txn);
           }
 
           // Track totals for this group
@@ -465,9 +440,11 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
 
             // Set accountId on each transaction and import directly
             // (deduplication already happened in Step 3)
+            // targetAccount is guaranteed to exist here (either found or created above)
+            const accountId = targetAccount.id;
             const transactionsWithAccountId = transactions.map((txn) => ({
               ...txn,
-              accountId: targetAccount!.id,
+              accountId,
             }));
 
             if (transactionsWithAccountId.length > 0) {
@@ -521,21 +498,27 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       case 1:
         return (
           <IBKRSourceSelectionStep
-            groupName={groupName}
-            setGroupName={setGroupName}
-            existingGroups={existingGroups}
+            accountGroup={{
+              groupName,
+              setGroupName,
+              existingGroups,
+            }}
             dataSource={dataSource}
             setDataSource={setDataSource}
-            flexToken={flexToken}
-            setFlexToken={setFlexToken}
-            flexQueryId={flexQueryId}
-            setFlexQueryId={setFlexQueryId}
-            showToken={showToken}
-            setShowToken={setShowToken}
-            rememberCredentials={rememberCredentials}
-            setRememberCredentials={setRememberCredentials}
-            selectedFiles={selectedFiles}
-            setSelectedFiles={setSelectedFiles}
+            flexQuery={{
+              token: flexToken,
+              setToken: setFlexToken,
+              queryId: flexQueryId,
+              setQueryId: setFlexQueryId,
+              showToken,
+              setShowToken,
+              rememberCredentials,
+              setRememberCredentials,
+            }}
+            csvFiles={{
+              files: selectedFiles,
+              setFiles: setSelectedFiles,
+            }}
             isLoading={isLoadingData || isParsing}
             onNext={handleLoadData}
           />

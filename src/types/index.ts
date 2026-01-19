@@ -89,3 +89,53 @@ export interface ProgressInfo {
   total: number;
   message?: string;
 }
+
+/**
+ * Processed IBKR row after preprocessing
+ * Extends the raw CSV data with internal classification and resolution fields
+ */
+export interface ProcessedIBKRRow {
+  // Account info
+  ClientAccountID?: string;
+  AccountAlias?: string;
+  CurrencyPrimary?: string;
+  FXRateToBase?: string;
+
+  // Asset info
+  AssetClass?: string;
+  Symbol?: string;
+  Description?: string;
+  SecurityID?: string;
+  CUSIP?: string;
+  ISIN?: string;
+  FIGI?: string;
+  ListingExchange?: string;
+
+  // Transaction info
+  TransactionType?: string;
+  Exchange?: string;
+  Quantity?: string;
+  TradePrice?: string;
+  TradeMoney?: string;
+  TradeDate?: string;
+  Date?: string;
+  ReportDate?: string;
+
+  // Activity info
+  ActivityCode?: string;
+  ActivityDescription?: string;
+
+  // Fee info
+  IBCommission?: string;
+  Taxes?: string;
+
+  // Level of detail (for FX trades)
+  LevelOfDetail?: string;
+
+  // Internal fields added by preprocessor
+  _IBKR_TYPE?: string;
+  _resolvedTicker?: string;
+
+  // Allow additional dynamic fields from CSV
+  [key: string]: string | undefined;
+}
