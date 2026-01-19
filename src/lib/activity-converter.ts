@@ -1,6 +1,7 @@
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
 import type { AccountPreview } from "../types";
+import { parseDividendInfo } from "./dividend-utils";
 
 /**
  * Activity Converter Service
@@ -9,39 +10,7 @@ import type { AccountPreview } from "../types";
  * for import into Wealthfolio
  */
 
-/**
- * Parse original currency and per-share amount from IBKR dividend ActivityDescription
- *
- * Examples:
- * - "O(US7561091049) Cash Dividend USD 0.264 per Share (Ordinary Dividend)"
- * - "SUPR(GB00BF345X11) Cash Dividend GBP 0.0153 per Share"
- * - "BAKKA(NO0010597883) Cash Dividend NOK 13.37347 per Share"
- * - "101 (HK0101000591) Cash Dividend HKD 0.40 (Ordinary Dividend)" (no "per Share")
- *
- * Returns: { currency: string, perShare: number } or null if not parseable
- */
-function parseDividendInfo(activityDescription: string): { currency: string; perShare: number } | null {
-  // Try format with "per Share"
-  let match = /Cash Dividend ([A-Z]{3}) ([\d.]+) per Share/i.exec(activityDescription);
-  if (match) {
-    return {
-      currency: match[1],
-      perShare: parseFloat(match[2])
-    };
-  }
-
-  // Try format without "per Share" (e.g., "Cash Dividend HKD 0.40 (Ordinary")
-  // Pattern: "Cash Dividend XXX N.NN" followed by space or (
-  match = /Cash Dividend ([A-Z]{3}) ([\d.]+)(?:\s|\()/i.exec(activityDescription);
-  if (match) {
-    return {
-      currency: match[1],
-      perShare: parseFloat(match[2])
-    };
-  }
-
-  return null;
-}
+// parseDividendInfo is now imported from dividend-utils.ts
 
 /**
  * Map IBKR activity types to Wealthfolio activity types

@@ -16,7 +16,14 @@ import { preprocessIBKRData } from './lib/ibkr-preprocessor';
 import { convertToActivityImports } from './lib/activity-converter';
 import { deduplicateActivities } from './lib/activity-deduplicator';
 import { AsyncLock } from './lib/async-lock';
-import { FETCH_COOLDOWN_MS, QUERY_STALE_TIME_MS } from './lib/constants';
+import { QUERY_STALE_TIME_MS } from './lib/constants';
+import {
+  isConfigInCooldown,
+  createActivityFingerprintGetter,
+  createSuccessStatus,
+  createErrorStatus,
+  formatImportResultMessage,
+} from './lib/auto-fetch-helpers';
 
 // Lock for preventing concurrent auto-fetch operations
 const autoFetchLock = new AsyncLock();
@@ -179,17 +186,10 @@ export function enable(ctx: AddonContext) {
       for (const config of enabledConfigs) {
         try {
           // Check per-config cooldown
-          if (config.lastFetchTime) {
-            const lastFetchMs = new Date(config.lastFetchTime).getTime();
-            // Skip cooldown check if date is invalid (NaN)
-            if (!isNaN(lastFetchMs)) {
-              const timeSince = Date.now() - lastFetchMs;
-              if (timeSince < FETCH_COOLDOWN_MS) {
-                const hoursRemaining = Math.round((FETCH_COOLDOWN_MS - timeSince) / (60 * 60 * 1000) * 10) / 10;
-                ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: cooldown active (${hoursRemaining}h remaining)`);
-                continue;
-              }
-            }
+          const cooldownCheck = isConfigInCooldown(config.lastFetchTime);
+          if (cooldownCheck.inCooldown) {
+            ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: cooldown active (${cooldownCheck.hoursRemaining}h remaining)`);
+            continue;
           }
 
           ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Starting...`);
@@ -213,9 +213,7 @@ export function enable(ctx: AddonContext) {
           if (parsed.rows.length === 0) {
             ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: No transactions found`);
             // Update status even for empty results
-            config.lastFetchTime = new Date().toISOString();
-            config.lastFetchStatus = 'success';
-            config.lastFetchError = undefined;
+            Object.assign(config, createSuccessStatus());
             try {
               await saveConfigs(ctx.api.secrets, configs);
             } catch (saveError) {
@@ -263,24 +261,11 @@ export function enable(ctx: AddonContext) {
             if (activitiesWithAccountId.length > 0 && ctx.api.activities) {
               try {
                 // Deduplicate before importing
+                const getExistingFingerprints = createActivityFingerprintGetter(ctx.api.activities);
                 const { toImport, duplicatesSkipped } = await deduplicateActivities(
                   activitiesWithAccountId,
                   account.id,
-                  async (accountId: string) => {
-                    const activities = await ctx.api.activities!.getAll(accountId);
-                    return activities.map((a) => ({
-                      // Convert Date to ISO string for deduplication fingerprinting
-                      activityDate: a.date instanceof Date ? a.date.toISOString().split('T')[0] : String(a.date),
-                      assetId: a.assetSymbol, // Use assetSymbol (ticker) not assetId (internal ID)
-                      activityType: a.activityType,
-                      quantity: a.quantity,
-                      unitPrice: a.unitPrice,
-                      amount: a.amount,
-                      fee: a.fee,
-                      currency: a.currency,
-                      comment: a.comment, // Include comment for dividend per-share fingerprinting
-                    }));
-                  }
+                  getExistingFingerprints
                 );
 
                 totalSkipped += duplicatesSkipped;
@@ -301,26 +286,21 @@ export function enable(ctx: AddonContext) {
           }
 
           // 6. Update config status
-          config.lastFetchTime = new Date().toISOString();
-          config.lastFetchStatus = 'success';
-          config.lastFetchError = undefined;
+          Object.assign(config, createSuccessStatus());
           try {
             await saveConfigs(ctx.api.secrets, configs);
           } catch (saveError) {
             ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save success status`);
           }
 
-          const skippedMsg = totalSkipped > 0 ? `, ${totalSkipped} duplicates skipped` : "";
-          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Complete - ${totalImported} transactions imported${skippedMsg}`);
+          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Complete - ${formatImportResultMessage(totalImported, totalSkipped)}`);
 
         } catch (error) {
-          const msg = error instanceof Error ? error.message : "Unknown error";
-          ctx.api.logger?.error(`IBKR auto-fetch [${config.name}]: Error - ${msg}`);
+          const errorStatus = createErrorStatus(error);
+          ctx.api.logger?.error(`IBKR auto-fetch [${config.name}]: Error - ${errorStatus.lastFetchError}`);
 
           // Update config with error status
-          config.lastFetchTime = new Date().toISOString();
-          config.lastFetchStatus = 'error';
-          config.lastFetchError = msg;
+          Object.assign(config, errorStatus);
           try {
             await saveConfigs(ctx.api.secrets, configs);
           } catch (saveError) {

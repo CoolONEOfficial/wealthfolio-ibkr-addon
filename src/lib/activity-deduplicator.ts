@@ -7,6 +7,7 @@
 
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
 import { MAX_DEBUG_LOGS } from "./constants";
+import { extractDividendPerShare } from "./dividend-utils";
 
 /**
  * Normalize a numeric value for fingerprinting
@@ -48,33 +49,7 @@ function normalizeString(value: string | undefined | null): string {
   return (value || "").trim().toUpperCase();
 }
 
-/**
- * Extract dividend per-share rate from IBKR activity description
- *
- * Examples:
- * - "O(US7561091049) Cash Dividend USD 0.264 per Share (Ordinary Dividend)"
- * - "SUPR(GB00BF345X11) Cash Dividend GBP 0.0153 per Share"
- * - "101 (HK0101000591) Cash Dividend HKD 0.40 (Ordinary Dividend)"
- *
- * Returns the per-share rate or null if not found
- */
-function extractDividendPerShare(comment: string | undefined | null): number | null {
-  if (!comment) return null;
-
-  // Try format with "per Share"
-  let match = /Cash Dividend [A-Z]{3} ([\d.]+) per Share/i.exec(comment);
-  if (match) {
-    return parseFloat(match[1]);
-  }
-
-  // Try format without "per Share" (e.g., "Cash Dividend HKD 0.40 (Ordinary")
-  match = /Cash Dividend [A-Z]{3} ([\d.]+)(?:\s|\()/i.exec(comment);
-  if (match) {
-    return parseFloat(match[1]);
-  }
-
-  return null;
-}
+// extractDividendPerShare is now imported from dividend-utils.ts
 
 /**
  * Activity types where quantity/unitPrice are reliably stored.
