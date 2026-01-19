@@ -1,0 +1,69 @@
+{
+  "name": "wealthfolio-ibkr-addon",
+  "version": "2.0.0",
+  "description": "Import IBKR transactions via CSV files or Flex Query API with automatic multi-currency account creation",
+  "type": "module",
+  "main": "dist/addon.js",
+  "author": "Nikolai Trukhin",
+  "license": "MIT",
+  "homepage": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon"
+  },
+  "bugs": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon/issues",
+  "keywords": [
+    "wealthfolio",
+    "addon",
+    "ibkr",
+    "import",
+    "multi-currency",
+    "interactive-brokers",
+    "flex-query"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "dev:server": "node dev-server.mjs",
+    "dev:full": "pnpm build && concurrently \"pnpm dev\" \"pnpm dev:server\"",
+    "clean": "rm -rf dist",
+    "package": "mkdir -p dist && zip -r dist/$npm_package_name-$npm_package_version.zip manifest.json dist/ README.md",
+    "bundle": "pnpm clean && pnpm build && pnpm package",
+    "lint": "tsc --noEmit",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
+    "@wealthfolio/addon-sdk": "^2.0.0",
+    "@wealthfolio/ui": "^2.0.0",
+    "lucide-react": "^0.562.0",
+    "motion": "^12.0.0",
+    "papaparse": "^5.4.1",
+    "react": "^19.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.0.0",
+    "@types/papaparse": "^5.3.14",
+    "@types/react": "^19.1.1",
+    "@types/react-dom": "^19.1.1",
+    "@wealthfolio/addon-dev-tools": "^2.0.0",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "rollup-plugin-external-globals": "^0.13.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vitest": "^3.2.4"
+  },
+  "files": [
+    "dist/",
+    "manifest.json",
+    "README.md"
+  ]
+}
