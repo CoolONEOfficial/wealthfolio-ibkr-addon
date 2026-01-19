@@ -156,26 +156,25 @@ describe("AsyncLock", () => {
       release2();
     });
 
-    it("should handle queue callback errors gracefully", async () => {
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
+    it("should remain locked if user code throws before calling release", async () => {
+      // Note: The queue callback just calls resolve() with the release function.
+      // If user code throws without calling release(), the lock stays locked.
+      // This is expected behavior - users should use withLock() for safety.
       const release1 = await lock.acquire();
 
-      // Queue an operation that will throw
-      const errorPromise = lock.acquire().then(() => {
+      // Queue an operation where the handler throws before calling release
+      const errorPromise = lock.acquire().then((release) => {
+        // Intentionally NOT calling release() before throwing
         throw new Error("Test error");
       });
 
       release1();
 
-      // The error should be caught and logged
+      // The error is in the Promise chain
       await expect(errorPromise).rejects.toThrow("Test error");
 
-      // Lock should be released (not deadlocked)
-      // Give it a tick to process
-      await new Promise((r) => setTimeout(r, 0));
-
-      consoleSpy.mockRestore();
+      // Lock is still held because release() was never called
+      expect(lock.isLocked()).toBe(true);
     });
   });
 

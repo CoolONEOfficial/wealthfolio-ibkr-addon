@@ -175,10 +175,11 @@ describe('Config Storage Edge Cases', () => {
       expect(configs).toEqual([]);
     });
 
-    it('should return empty array for JSON array with null', async () => {
+    it('should filter out null entries from JSON array', async () => {
+      // Null entries are invalid configs and should be filtered out
       await secrets.set('flex_query_configs', '[null]');
       const configs = await loadConfigs(secrets);
-      expect(configs).toEqual([null]);
+      expect(configs).toEqual([]);
     });
 
     it('should handle deeply nested JSON', async () => {
@@ -362,8 +363,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should NOT be split - BRK.B is not an FX pair
-      expect(result).toHaveLength(1);
-      expect(result[0].activityType).toBe('BUY');
+      expect(result.transactions).toHaveLength(1);
+      expect(result.transactions[0].activityType).toBe('BUY');
     });
 
     it('should NOT match numeric HK stock symbols (0005.HK)', () => {
@@ -386,7 +387,7 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should NOT be split
-      expect(result).toHaveLength(1);
+      expect(result.transactions).toHaveLength(1);
     });
 
     it('should match valid FX symbols (GBP.USD)', () => {
@@ -412,9 +413,9 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should be split into withdrawal + deposit
-      expect(result).toHaveLength(2);
-      expect(result.some(r => r.activityType === 'WITHDRAWAL')).toBe(true);
-      expect(result.some(r => r.activityType === 'DEPOSIT')).toBe(true);
+      expect(result.transactions).toHaveLength(2);
+      expect(result.transactions.some(r => r.activityType === 'WITHDRAWAL')).toBe(true);
+      expect(result.transactions.some(r => r.activityType === 'DEPOSIT')).toBe(true);
     });
 
     it('should handle FX with zero quantity', () => {
@@ -440,9 +441,9 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should create transactions with 0 amounts
-      expect(result).toHaveLength(2);
-      expect(result[0].amount).toBe(0);
-      expect(result[1].amount).toBe(0);
+      expect(result.transactions).toHaveLength(2);
+      expect(result.transactions[0].amount).toBe(0);
+      expect(result.transactions[1].amount).toBe(0);
     });
   });
 
@@ -468,7 +469,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should be skipped (no output)
-      expect(result).toHaveLength(0);
+      expect(result.transactions).toHaveLength(0);
+      expect(result.skippedConversions).toHaveLength(1);
     });
 
     it('should skip FX if target account missing', () => {
@@ -492,7 +494,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should be skipped
-      expect(result).toHaveLength(0);
+      expect(result.transactions).toHaveLength(0);
+      expect(result.skippedConversions).toHaveLength(1);
     });
 
     it('should handle empty accounts map', () => {
@@ -514,7 +517,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const accounts = new Map<string, Account>();
       const result = splitFXConversions(transactions, accounts);
 
-      expect(result).toHaveLength(0);
+      expect(result.transactions).toHaveLength(0);
+      expect(result.skippedConversions).toHaveLength(1);
     });
   });
 
@@ -541,8 +545,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       ]);
       const result = splitFXConversions(transactions, accounts);
 
-      const withdrawal = result.find(r => r.activityType === 'WITHDRAWAL');
-      const deposit = result.find(r => r.activityType === 'DEPOSIT');
+      const withdrawal = result.transactions.find(r => r.activityType === 'WITHDRAWAL');
+      const deposit = result.transactions.find(r => r.activityType === 'DEPOSIT');
 
       expect(withdrawal?.amount).toBe(1000); // Source amount
       expect(deposit?.amount).toBe(1250); // 1000 * 1.25
@@ -570,7 +574,7 @@ describe('FX Transaction Splitter Edge Cases', () => {
       ]);
       const result = splitFXConversions(transactions, accounts);
 
-      const deposit = result.find(r => r.activityType === 'DEPOSIT');
+      const deposit = result.transactions.find(r => r.activityType === 'DEPOSIT');
       expect(deposit?.amount).toBe(1250);
     });
   });
@@ -615,8 +619,8 @@ describe('FX Transaction Splitter Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // 1 stock trade + 2 FX splits
-      expect(result).toHaveLength(3);
-      expect(result[0].symbol).toBe('AAPL');
+      expect(result.transactions).toHaveLength(3);
+      expect(result.transactions[0].symbol).toBe('AAPL');
     });
   });
 });
@@ -934,7 +938,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-02-01',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       // Should still create dividend activity
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('DIVIDEND');
@@ -963,7 +967,7 @@ describe('Activity Converter Edge Cases', () => {
         },
       ];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // Position is -100 (short), position-based would be -24, so fallback to TradeMoney = 24
       expect(dividend?.amount).toBe(24);
@@ -982,7 +986,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       // Should fallback to CurrencyPrimary
       expect(activities[0].currency).toBe('EUR');
     });
@@ -998,7 +1002,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].currency).toBe('GBP');
     });
   });
@@ -1015,7 +1019,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].amount).toBe(0);
       expect(activities[0].unitPrice).toBe(0);
     });
@@ -1031,7 +1035,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].amount).toBe(100); // 1M * 0.0001
     });
 
@@ -1046,7 +1050,7 @@ describe('Activity Converter Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].quantity).toBe(0);
       expect(activities[0].amount).toBe(0);
     });
@@ -1065,7 +1069,7 @@ describe('Activity Converter Edge Cases', () => {
         // No ActivityDescription or Description
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].comment).toBe('');
     });
 
@@ -1080,7 +1084,7 @@ describe('Activity Converter Edge Cases', () => {
         Description: 'Generic fee',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].comment).toBe('Market data fee');
     });
   });
@@ -1098,7 +1102,7 @@ describe('Activity Converter Edge Cases', () => {
         ReportDate: '2024-01-14', // Different
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].date).toBe('2024-01-15');
     });
 
@@ -1114,11 +1118,11 @@ describe('Activity Converter Edge Cases', () => {
         ReportDate: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].date).toBe('2024-01-15');
     });
 
-    it('should use today\'s date as last fallback', async () => {
+    it('should reject transactions without dates', async () => {
       const rows = [{
         _IBKR_TYPE: 'IBKR_BUY',
         Symbol: 'AAPL',
@@ -1129,9 +1133,11 @@ describe('Activity Converter Edge Cases', () => {
         // No date fields
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
-      // Should use today's date
-      expect(activities[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      const { activities, errors } = await convertToActivityImports(rows, mockAccountPreviews);
+      // Should not create activity without date - it's an error
+      expect(activities).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toContain('Missing date');
     });
   });
 });

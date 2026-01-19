@@ -31,11 +31,12 @@ describe("Activity Deduplicator", () => {
     });
 
     it("should normalize case in symbol and activity type", () => {
+      // Using lowercase to test case normalization - cast needed since ActivityType is uppercase
       const activity1: ActivityImport = {
         accountId: "acc1",
         date: "2024-01-15",
         symbol: "aapl",
-        activityType: "buy",
+        activityType: "buy" as ActivityImport["activityType"],
         quantity: 10,
         unitPrice: 150.50,
         currency: "usd",

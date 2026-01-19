@@ -4,6 +4,17 @@
  * Stores configs as JSON in the secrets API (encrypted in system keyring).
  */
 
+import { debug } from "./debug-logger";
+import { getErrorMessage } from "./shared-utils";
+import { AsyncLock, withLock } from "./async-lock";
+
+/**
+ * Module-level lock to prevent concurrent read-modify-write operations.
+ * This prevents TOCTOU race conditions when multiple operations try to
+ * modify configs simultaneously.
+ */
+const configLock = new AsyncLock();
+
 // Type for the secrets API from addon context
 interface SecretsAPI {
   get(key: string): Promise<string | null>;
@@ -30,17 +41,68 @@ export interface FlexQueryConfig {
 }
 
 /**
- * Load all Flex Query configurations from storage
+ * Result type for config loading that distinguishes between success and failure
  */
-export async function loadConfigs(secrets: SecretsAPI): Promise<FlexQueryConfig[]> {
+export interface LoadConfigsResult {
+  /** Whether loading succeeded */
+  success: boolean;
+  /** The loaded configs (empty array if no configs exist, undefined if failed) */
+  configs: FlexQueryConfig[] | undefined;
+  /** Error message if loading failed */
+  error?: string;
+}
+
+/**
+ * Load all Flex Query configurations from storage with explicit error handling
+ * Returns a result object that distinguishes between "no configs" and "load failed"
+ */
+export async function loadConfigsSafe(secrets: SecretsAPI): Promise<LoadConfigsResult> {
   try {
     const json = await secrets.get(SECRET_FLEX_CONFIGS);
-    if (!json) return [];
-    return JSON.parse(json) as FlexQueryConfig[];
+    if (!json) {
+      return { success: true, configs: [] };
+    }
+    const parsed = JSON.parse(json);
+
+    // Validate parsed result is an array
+    if (!Array.isArray(parsed)) {
+      debug.error("Flex Query configs storage is corrupted (not an array), resetting to empty");
+      return { success: true, configs: [] };
+    }
+
+    // Validate each config has required fields
+    const validConfigs: FlexQueryConfig[] = [];
+    for (const config of parsed) {
+      if (
+        typeof config === "object" &&
+        config !== null &&
+        typeof config.id === "string" &&
+        typeof config.name === "string" &&
+        typeof config.queryId === "string" &&
+        typeof config.accountGroup === "string"
+      ) {
+        validConfigs.push(config as FlexQueryConfig);
+      } else {
+        debug.warn("Skipping invalid config entry:", config);
+      }
+    }
+
+    return { success: true, configs: validConfigs };
   } catch (error) {
-    console.error("Failed to load Flex Query configs:", error);
-    return [];
+    const errorMsg = getErrorMessage(error);
+    debug.error("Failed to load Flex Query configs:", errorMsg);
+    return { success: false, configs: undefined, error: errorMsg };
   }
+}
+
+/**
+ * Load all Flex Query configurations from storage
+ * @deprecated Use loadConfigsSafe() to properly handle errors
+ * This function returns [] on error which is indistinguishable from "no configs"
+ */
+export async function loadConfigs(secrets: SecretsAPI): Promise<FlexQueryConfig[]> {
+  const result = await loadConfigsSafe(secrets);
+  return result.configs ?? [];
 }
 
 /**
@@ -55,48 +117,57 @@ export async function saveConfigs(
 
 /**
  * Add a new config
+ * Uses a lock to prevent race conditions with concurrent modifications.
  */
 export async function addConfig(
   secrets: SecretsAPI,
   config: Omit<FlexQueryConfig, "id">
 ): Promise<FlexQueryConfig> {
-  const configs = await loadConfigs(secrets);
-  const newConfig: FlexQueryConfig = {
-    ...config,
-    id: crypto.randomUUID(),
-  };
-  configs.push(newConfig);
-  await saveConfigs(secrets, configs);
-  return newConfig;
+  return withLock(configLock, async () => {
+    const configs = await loadConfigs(secrets);
+    const newConfig: FlexQueryConfig = {
+      ...config,
+      id: crypto.randomUUID(),
+    };
+    configs.push(newConfig);
+    await saveConfigs(secrets, configs);
+    return newConfig;
+  });
 }
 
 /**
  * Update an existing config
+ * Uses a lock to prevent race conditions with concurrent modifications.
  */
 export async function updateConfig(
   secrets: SecretsAPI,
   id: string,
   updates: Partial<Omit<FlexQueryConfig, "id">>
 ): Promise<FlexQueryConfig | null> {
-  const configs = await loadConfigs(secrets);
-  const index = configs.findIndex((c) => c.id === id);
-  if (index === -1) return null;
+  return withLock(configLock, async () => {
+    const configs = await loadConfigs(secrets);
+    const index = configs.findIndex((c) => c.id === id);
+    if (index === -1) return null;
 
-  configs[index] = { ...configs[index], ...updates };
-  await saveConfigs(secrets, configs);
-  return configs[index];
+    configs[index] = { ...configs[index], ...updates };
+    await saveConfigs(secrets, configs);
+    return configs[index];
+  });
 }
 
 /**
  * Delete a config by ID
+ * Uses a lock to prevent race conditions with concurrent modifications.
  */
 export async function deleteConfig(secrets: SecretsAPI, id: string): Promise<boolean> {
-  const configs = await loadConfigs(secrets);
-  const filtered = configs.filter((c) => c.id !== id);
-  if (filtered.length === configs.length) return false;
+  return withLock(configLock, async () => {
+    const configs = await loadConfigs(secrets);
+    const filtered = configs.filter((c) => c.id !== id);
+    if (filtered.length === configs.length) return false;
 
-  await saveConfigs(secrets, filtered);
-  return true;
+    await saveConfigs(secrets, filtered);
+    return true;
+  });
 }
 
 /**
@@ -121,8 +192,8 @@ export async function deleteToken(secrets: SecretsAPI): Promise<void> {
 }
 
 /**
- * Update config status atomically (re-loads configs to avoid race conditions)
- * This is safer than modifying a stale config object and saving all configs
+ * Update config status with proper locking to prevent race conditions.
+ * Uses a lock to ensure atomic read-modify-write operations.
  */
 export async function updateConfigStatus(
   secrets: SecretsAPI,
@@ -133,14 +204,15 @@ export async function updateConfigStatus(
     lastFetchError?: string;
   }
 ): Promise<void> {
-  // Atomically load and update to avoid race conditions
-  const configs = await loadConfigs(secrets);
-  const index = configs.findIndex((c) => c.id === id);
-  if (index === -1) {
-    console.warn(`[Flex Config] Cannot update status: config ${id} not found`);
-    return;
-  }
+  await withLock(configLock, async () => {
+    const configs = await loadConfigs(secrets);
+    const index = configs.findIndex((c) => c.id === id);
+    if (index === -1) {
+      debug.warn(`[Flex Config] Cannot update status: config ${id} not found`);
+      return;
+    }
 
-  configs[index] = { ...configs[index], ...status };
-  await saveConfigs(secrets, configs);
+    configs[index] = { ...configs[index], ...status };
+    await saveConfigs(secrets, configs);
+  });
 }

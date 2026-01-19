@@ -108,7 +108,7 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
         { currency: "NOK", name: "Test NOK", existingAccount: { id: "acc-nok" } },
       ];
 
-      const activities1 = await convertToActivityImports(preprocessed1.processedData, accountPreviews as any);
+      const { activities: activities1 } = await convertToActivityImports(preprocessed1.processedData, accountPreviews as any);
 
       if (activities1.length === 0) {
         console.log("No activities parsed from CSV1, skipping test");
@@ -123,7 +123,7 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       // Second import of same CSV
       const parsed2 = parseFlexQueryCSV(csv1Content);
       const preprocessed2 = preprocessIBKRData(parsed2.rows);
-      const activities2 = await convertToActivityImports(preprocessed2.processedData, accountPreviews as any);
+      const { activities: activities2 } = await convertToActivityImports(preprocessed2.processedData, accountPreviews as any);
 
       // Filter duplicates
       const { unique, duplicates } = filterDuplicateActivities(activities2, storedActivities);
@@ -158,12 +158,12 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       // First import: CSV1
       const parsed1 = parseFlexQueryCSV(csv1Content);
       const preprocessed1 = preprocessIBKRData(parsed1.rows);
-      const activities1 = await convertToActivityImports(preprocessed1.processedData, accountPreviews as any);
+      const { activities: activities1 } = await convertToActivityImports(preprocessed1.processedData, accountPreviews as any);
 
       // Second import: CSV2
       const parsed2 = parseFlexQueryCSV(csv2Content);
       const preprocessed2 = preprocessIBKRData(parsed2.rows);
-      const activities2 = await convertToActivityImports(preprocessed2.processedData, accountPreviews as any);
+      const { activities: activities2 } = await convertToActivityImports(preprocessed2.processedData, accountPreviews as any);
 
       // Combine both into "database"
       const allActivities = [...activities1, ...activities2];
@@ -496,7 +496,7 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       // Step 1: Import CSV (simulating manual upload)
       const parsedCSV = parseFlexQueryCSV(csv1Content);
       const preprocessedCSV = preprocessIBKRData(parsedCSV.rows);
-      const csvActivities = await convertToActivityImports(preprocessedCSV.processedData, accountPreviews as any);
+      const { activities: csvActivities } = await convertToActivityImports(preprocessedCSV.processedData, accountPreviews as any);
 
       // Store in "database"
       const storedActivities = csvActivities.map(simulateDatabaseStorage);
@@ -536,7 +536,7 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       // Parse and convert
       const parsed = parseFlexQueryCSV(csv1Content);
       const preprocessed = preprocessIBKRData(parsed.rows);
-      const activities = await convertToActivityImports(preprocessed.processedData, accountPreviews as any);
+      const { activities } = await convertToActivityImports(preprocessed.processedData, accountPreviews as any);
 
       if (activities.length === 0) {
         console.log("No activities to analyze");

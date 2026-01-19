@@ -11,6 +11,41 @@
 
 const IBKR_HEADER_START = '"ClientAccountID"';
 
+/**
+ * Parse a CSV line properly handling quoted fields with embedded commas.
+ * IBKR exports can contain fields like "COMPANY, INC." which naive split breaks.
+ */
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let currentField = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+        // Escaped quote inside quoted field
+        currentField += '"';
+        i++; // Skip next quote
+      } else {
+        inQuotes = !inQuotes;
+        currentField += char;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(currentField.trim());
+      currentField = '';
+    } else {
+      currentField += char;
+    }
+  }
+
+  // Don't forget the last field
+  result.push(currentField.trim());
+
+  return result;
+}
+
 export interface CsvSection {
   header: string;
   rows: string[];
@@ -39,7 +74,7 @@ function detectIBKRSections(csvContent: string): CsvSection[] {
       }
 
       // Start new section
-      const columnCount = line.split(',').length;
+      const columnCount = parseCSVLine(line).length;
       currentSection = {
         header: line,
         rows: [],
@@ -160,7 +195,7 @@ export function extractTradesSection(csvContent: string): string {
 
   // Find the trades section to use as base header (order may vary!)
   const tradesSection = sections.find(section => {
-    const headers = section.header.split(',').map(h => h.trim());
+    const headers = parseCSVLine(section.header);
     return detectSectionType(headers) === 'trades';
   });
 
@@ -168,13 +203,13 @@ export function extractTradesSection(csvContent: string): string {
     throw new Error('No trades section found in IBKR CSV');
   }
 
-  const baseHeaders = tradesSection.header.split(',').map(h => h.trim());
+  const baseHeaders = parseCSVLine(tradesSection.header);
 
   // Collect all unique normalized headers from all sections
   const allNormalizedHeaders = new Set<string>(baseHeaders.map(h => h.replace(/^"|"$/g, '')));
 
   for (const section of sections) {
-    const sectionHeaders = section.header.split(',').map(h => h.trim());
+    const sectionHeaders = parseCSVLine(section.header);
     const sectionType = detectSectionType(sectionHeaders);
     const normalizedHeaders = normalizeHeaders(sectionHeaders, sectionType);
 
@@ -196,13 +231,13 @@ export function extractTradesSection(csvContent: string): string {
   const allRows: string[] = [];
 
   for (const section of sections) {
-    const sectionHeaders = section.header.split(',').map(h => h.trim());
+    const sectionHeaders = parseCSVLine(section.header);
     const sectionType = detectSectionType(sectionHeaders);
     const normalizedHeaders = normalizeHeaders(sectionHeaders, sectionType);
 
     // For each data row in this section, map values to final header positions
     for (const row of section.rows) {
-      const values = row.split(',').map(v => v.trim());
+      const values = parseCSVLine(row);
 
       // Create a map of normalized header -> value
       const valueMap = new Map<string, string>();

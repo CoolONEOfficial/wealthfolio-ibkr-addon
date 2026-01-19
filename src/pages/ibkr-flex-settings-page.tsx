@@ -35,6 +35,7 @@ import {
   useDeleteConfig,
   useSaveToken,
 } from "../hooks/use-flex-configs";
+import { getErrorMessage } from "../lib/shared-utils";
 
 interface IBKRFlexSettingsPageProps {
   ctx?: AddonContext;
@@ -79,7 +80,7 @@ const IBKRFlexSettingsPage: React.FC<IBKRFlexSettingsPageProps> = ({ ctx }) => {
         const groups = [...new Set(accounts.map((a) => a.group).filter(Boolean))] as string[];
         setExistingGroups(groups.sort());
       } catch (e) {
-        logger?.error?.(`Failed to load accounts: ${e instanceof Error ? e.message : String(e)}`);
+        logger?.error(`Failed to load accounts: ${getErrorMessage(e)}`);
       }
     };
     loadAccounts();

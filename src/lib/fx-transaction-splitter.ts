@@ -1,4 +1,38 @@
 import type { Account, ActivityImport } from "@wealthfolio/addon-sdk";
+import { debug } from "./debug-logger";
+import { createCashSymbol } from "./shared-utils";
+
+/**
+ * Information about a skipped FX conversion
+ */
+export interface SkippedFXConversion {
+  /** Original transaction symbol (e.g., "GBP.USD") */
+  symbol: string;
+  /** Reason the conversion was skipped */
+  reason: string;
+  /** Source currency code */
+  sourceCurrency?: string;
+  /** Target currency code */
+  targetCurrency?: string;
+  /** Source amount that would have been withdrawn */
+  sourceAmount?: number;
+  /** Target amount that would have been deposited */
+  targetAmount?: number;
+}
+
+/**
+ * Result of splitting FX conversions
+ */
+export interface SplitFXConversionsResult {
+  /** Processed transactions with FX conversions split into pairs */
+  transactions: ActivityImport[];
+  /** FX conversions that were skipped (missing accounts, invalid format, etc.) */
+  skippedConversions: SkippedFXConversion[];
+  /** Total number of FX conversions found */
+  totalFXConversions: number;
+  /** Number of FX conversions successfully split */
+  successfulSplits: number;
+}
 
 /**
  * Split FX conversion transactions into withdrawal + deposit pairs
@@ -14,17 +48,44 @@ import type { Account, ActivityImport } from "@wealthfolio/addon-sdk";
  *
  * @param transactions - Array of classified transactions (including FX_CONVERSION types)
  * @param accountsByCurrency - Map of currency code to Account object
- * @returns Array with FX conversions replaced by withdrawal/deposit pairs
+ * @returns Result object with transactions and information about any skipped conversions
  */
 export function splitFXConversions(
   transactions: ActivityImport[],
   accountsByCurrency: Map<string, Account>
-): ActivityImport[] {
+): SplitFXConversionsResult {
+  // Validate inputs - return empty result for null/undefined
+  if (!transactions || !Array.isArray(transactions)) {
+    debug.warn("splitFXConversions: Invalid transactions input");
+    return {
+      transactions: [],
+      skippedConversions: [],
+      totalFXConversions: 0,
+      successfulSplits: 0,
+    };
+  }
+
+  if (!accountsByCurrency || !(accountsByCurrency instanceof Map)) {
+    debug.warn("splitFXConversions: Invalid accountsByCurrency input");
+    return {
+      transactions: [...transactions], // Pass through unchanged
+      skippedConversions: [],
+      totalFXConversions: 0,
+      successfulSplits: 0,
+    };
+  }
+
   const result: ActivityImport[] = [];
+  const skippedConversions: SkippedFXConversion[] = [];
   let fxConversionCount = 0;
-  let fxSkippedCount = 0;
+  let successfulSplits = 0;
 
   for (const transaction of transactions) {
+    // Skip null/undefined transactions
+    if (!transaction) {
+      continue;
+    }
+
     // Pass through non-FX transactions unchanged
     if (!isFXConversion(transaction)) {
       result.push(transaction);
@@ -36,8 +97,11 @@ export function splitFXConversions(
     // Parse FX transaction to extract currencies and amounts
     const fxDetails = parseFXTransaction(transaction);
     if (!fxDetails) {
-      console.warn("Could not parse FX transaction, skipping:", transaction);
-      fxSkippedCount++;
+      debug.warn("Could not parse FX transaction, skipping:", transaction);
+      skippedConversions.push({
+        symbol: transaction.symbol || "unknown",
+        reason: "Invalid FX transaction format - could not parse currencies or amounts",
+      });
       continue;
     }
 
@@ -54,18 +118,32 @@ export function splitFXConversions(
     const targetAccount = accountsByCurrency.get(targetCurrency);
 
     if (!sourceAccount) {
-      console.warn(
+      debug.warn(
         `Skipping FX conversion: ${sourceCurrency} account not found`
       );
-      fxSkippedCount++;
+      skippedConversions.push({
+        symbol: transaction.symbol || "unknown",
+        reason: `Source account for ${sourceCurrency} not found - cannot create withdrawal`,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount,
+        targetAmount,
+      });
       continue;
     }
 
     if (!targetAccount) {
-      console.warn(
+      debug.warn(
         `Skipping FX conversion: ${targetCurrency} account not found`
       );
-      fxSkippedCount++;
+      skippedConversions.push({
+        symbol: transaction.symbol || "unknown",
+        reason: `Target account for ${targetCurrency} not found - cannot create deposit`,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount,
+        targetAmount,
+      });
       continue;
     }
 
@@ -73,7 +151,7 @@ export function splitFXConversions(
     const withdrawal: ActivityImport = {
       ...transaction,
       activityType: "WITHDRAWAL",
-      symbol: `$CASH-${sourceCurrency}`,
+      symbol: createCashSymbol(sourceCurrency),
       currency: sourceCurrency,
       quantity: 0,
       unitPrice: 0,
@@ -88,7 +166,7 @@ export function splitFXConversions(
     const deposit: ActivityImport = {
       ...transaction,
       activityType: "DEPOSIT",
-      symbol: `$CASH-${targetCurrency}`,
+      symbol: createCashSymbol(targetCurrency),
       currency: targetCurrency,
       quantity: 0,
       unitPrice: 0,
@@ -101,15 +179,21 @@ export function splitFXConversions(
 
     result.push(withdrawal);
     result.push(deposit);
+    successfulSplits++;
   }
 
   if (fxConversionCount > 0) {
-    console.log(
-      `Processed ${fxConversionCount} FX conversions, created ${(fxConversionCount - fxSkippedCount) * 2} transactions, skipped ${fxSkippedCount}`
+    debug.log(
+      `Processed ${fxConversionCount} FX conversions, created ${successfulSplits * 2} transactions, skipped ${skippedConversions.length}`
     );
   }
 
-  return result;
+  return {
+    transactions: result,
+    skippedConversions,
+    totalFXConversions: fxConversionCount,
+    successfulSplits,
+  };
 }
 
 /**
@@ -145,12 +229,19 @@ function parseFXTransaction(transaction: ActivityImport): {
   // Parse currency pair from symbol (e.g., "GBP.USD" -> GBP is source, USD is target)
   const parts = symbol.split(".");
   if (parts.length !== 2) {
-    console.warn(`Invalid FX symbol format: ${symbol}`);
+    debug.warn(`Invalid FX symbol format: ${symbol}`);
     return null;
   }
 
   const sourceCurrency = parts[0];
   const targetCurrency = parts[1];
+
+  // Validate currency codes are exactly 3 uppercase letters
+  const currencyPattern = /^[A-Z]{3}$/;
+  if (!currencyPattern.test(sourceCurrency) || !currencyPattern.test(targetCurrency)) {
+    debug.warn(`Invalid currency codes in FX symbol: ${symbol} (source: ${sourceCurrency}, target: ${targetCurrency})`);
+    return null;
+  }
 
   // Source amount is the quantity (negative in IBKR for sales, we want absolute value)
   const sourceAmount = Math.abs(transaction.quantity || 0);
@@ -171,7 +262,7 @@ function parseFXTransaction(transaction: ActivityImport): {
 
   const comment = transaction.comment || `FX: ${sourceCurrency} → ${targetCurrency}`;
 
-  console.log(`FX Conversion: ${sourceAmount} ${sourceCurrency} → ${targetAmount.toFixed(2)} ${targetCurrency} (rate: ${transaction.unitPrice})`);
+  debug.log(`FX Conversion: ${sourceAmount} ${sourceCurrency} → ${targetAmount.toFixed(2)} ${targetCurrency} (rate: ${transaction.unitPrice})`);
 
   return {
     sourceCurrency,

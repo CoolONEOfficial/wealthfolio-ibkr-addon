@@ -141,7 +141,7 @@ describe('Date Format Handling', () => {
         { currency: 'NOK', name: 'Test NOK' },
       ];
 
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
 
       // Position at dividend date should be 150 (100 + 50)
@@ -155,7 +155,7 @@ describe('Date Format Handling', () => {
       ];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].date).toBe('20240115');
     });
@@ -166,7 +166,7 @@ describe('Date Format Handling', () => {
       ];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].date).toBe('2024-01-15 10:30:00');
     });
@@ -184,23 +184,25 @@ describe('Date Format Handling', () => {
         { currency: 'NOK', name: 'Test NOK' },
       ];
 
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
 
       // Trade is on same date as dividend, so position should include it
       expect(dividend?.amount).toBe(10); // 100 * 0.10
     });
 
-    it('should handle missing date field gracefully', async () => {
+    it('should reject transactions without dates', async () => {
       const rows = [
         { _IBKR_TYPE: 'IBKR_BUY', Symbol: 'AAPL', Quantity: '100', TradePrice: '150', CurrencyPrimary: 'USD', ListingExchange: 'NASDAQ' },
       ];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities, errors } = await convertToActivityImports(rows, mockAccounts);
 
-      // Should use today's date as fallback
-      expect(activities[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Transactions without dates should be rejected (not silently defaulted to today)
+      expect(activities).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toContain('Missing date');
     });
 
     it('should use ReportDate when Date is missing', async () => {
@@ -209,7 +211,7 @@ describe('Date Format Handling', () => {
       ];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].date).toBe('2024-01-15');
     });
@@ -229,7 +231,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // Position-based: 200 * 0.50 = 100
@@ -243,7 +245,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // GBP dividend uses position * per share: 1000 * 0.0154 = 15.40
@@ -259,7 +261,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       // No position = fallback to TradeMoney = 24
       expect(activities[0].amount).toBe(24);
@@ -274,7 +276,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // Total position: 50 + 30 + 20 = 100, dividend = 100 * 0.25 = 25
@@ -289,7 +291,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // Position after sell: 100 - 30 = 70, dividend = 70 * 0.25 = 17.5
@@ -303,7 +305,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       // Should match despite case difference
@@ -319,7 +321,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       expect(dividend?.currency).toBe('GBP');
@@ -333,7 +335,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'HKD', name: 'Test HKD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       expect(dividend?.currency).toBe('HKD');
@@ -346,7 +348,7 @@ describe('Dividend Calculation Issues', () => {
       ];
 
       const mockAccounts = [{ currency: 'GBP', name: 'Test GBP' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       // Can't parse dividend info, uses TradeMoney directly
       expect(activities[0].amount).toBe(24.5);
@@ -466,8 +468,8 @@ describe('Symbol Classification Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // BRK.B should not be split
-      expect(result).toHaveLength(1);
-      expect(result[0].activityType).toBe('BUY');
+      expect(result.transactions).toHaveLength(1);
+      expect(result.transactions[0].activityType).toBe('BUY');
     });
 
     it('should NOT treat VOD.L as FX conversion', () => {
@@ -489,8 +491,8 @@ describe('Symbol Classification Edge Cases', () => {
       const accounts = new Map([['GBP', createMockAccount('GBP')]]);
       const result = splitFXConversions(transactions, accounts);
 
-      expect(result).toHaveLength(1);
-      expect(result[0].symbol).toBe('VOD.L');
+      expect(result.transactions).toHaveLength(1);
+      expect(result.transactions[0].symbol).toBe('VOD.L');
     });
 
     it('should NOT treat 0005.HK as FX conversion', () => {
@@ -512,7 +514,7 @@ describe('Symbol Classification Edge Cases', () => {
       const accounts = new Map([['HKD', createMockAccount('HKD')]]);
       const result = splitFXConversions(transactions, accounts);
 
-      expect(result).toHaveLength(1);
+      expect(result.transactions).toHaveLength(1);
     });
 
     it('should treat GBP.USD as FX conversion', () => {
@@ -538,7 +540,7 @@ describe('Symbol Classification Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // Should be split into withdrawal + deposit
-      expect(result).toHaveLength(2);
+      expect(result.transactions).toHaveLength(2);
     });
 
     it('should treat EUR.CHF as FX conversion', () => {
@@ -563,7 +565,7 @@ describe('Symbol Classification Edge Cases', () => {
       ]);
       const result = splitFXConversions(transactions, accounts);
 
-      expect(result).toHaveLength(2);
+      expect(result.transactions).toHaveLength(2);
     });
 
     it('should handle mixed batch with stocks and FX', () => {
@@ -619,9 +621,9 @@ describe('Symbol Classification Edge Cases', () => {
       const result = splitFXConversions(transactions, accounts);
 
       // 2 stocks + 2 FX splits = 4 transactions
-      expect(result).toHaveLength(4);
-      expect(result.filter(r => r.symbol === 'AAPL')).toHaveLength(1);
-      expect(result.filter(r => r.symbol === 'BRK.B')).toHaveLength(1);
+      expect(result.transactions).toHaveLength(4);
+      expect(result.transactions.filter(r => r.symbol === 'AAPL')).toHaveLength(1);
+      expect(result.transactions.filter(r => r.symbol === 'BRK.B')).toHaveLength(1);
     });
   });
 
@@ -671,7 +673,7 @@ describe('Symbol Classification Edge Cases', () => {
         ]);
         const result = splitFXConversions(transactions, accounts);
 
-        expect(result).toHaveLength(2);
+        expect(result.transactions).toHaveLength(2);
       });
     });
 
@@ -698,7 +700,7 @@ describe('Symbol Classification Edge Cases', () => {
         const result = splitFXConversions(transactions, accounts);
 
         // Should not be split (no matching accounts for invalid patterns anyway)
-        expect(result.length).toBeLessThanOrEqual(1);
+        expect(result.transactions.length).toBeLessThanOrEqual(1);
       });
     });
   });
@@ -828,7 +830,7 @@ describe('Ticker Resolution Edge Cases', () => {
       }];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].currency).toBe('USD');
     });
@@ -845,7 +847,7 @@ describe('Ticker Resolution Edge Cases', () => {
       }];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       // Should fallback to CurrencyPrimary
       expect(activities[0].currency).toBe('USD');
@@ -865,7 +867,7 @@ describe('Ticker Resolution Edge Cases', () => {
       }];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].symbol).toBe('F');
     });
@@ -880,7 +882,7 @@ describe('Ticker Resolution Edge Cases', () => {
       }];
 
       const mockAccounts = [{ currency: 'USD', name: 'Test USD' }];
-      const activities = await convertToActivityImports(rows, mockAccounts);
+      const { activities } = await convertToActivityImports(rows, mockAccounts);
 
       expect(activities[0].symbol).toBe('$CASH-USD');
     });

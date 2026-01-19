@@ -1,4 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resolveTickersFromIBKR } from "../lib/ticker-resolution-service";
+import type { ProcessedIBKRRow } from "../types";
+
+// Mock the ticker-resolver module
+vi.mock("../lib/ticker-resolver", () => ({
+  resolveTicker: vi.fn().mockResolvedValue({
+    yahooTicker: "AAPL",
+    confidence: "high",
+    source: "wealthfolio",
+  }),
+  extractTickersToResolve: vi.fn().mockReturnValue([]),
+}));
+
+// Mock the constants
+vi.mock("../lib/constants", () => ({
+  TICKER_RESOLUTION_DELAY_MS: 0, // No delay in tests
+}));
 
 // Test the helper functions by extracting them
 // These are the core logic from ticker-resolution-service.ts
@@ -337,6 +354,320 @@ describe("Ticker Resolution Service", () => {
           `Exchange ${exchange} has invalid suffix: ${suffix}`
         ).toBe(true);
       }
+    });
+  });
+
+  describe("resolveTickersFromIBKR", () => {
+    beforeEach(async () => {
+      vi.clearAllMocks();
+    });
+
+    it("should resolve tickers from IBKR data", async () => {
+      const { resolveTicker, extractTickersToResolve } = await import(
+        "../lib/ticker-resolver"
+      );
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([
+        { symbol: "AAPL", isin: "US0378331005", exchange: "NASDAQ" },
+      ]);
+
+      vi.mocked(resolveTicker).mockResolvedValueOnce({
+        yahooTicker: "AAPL",
+        confidence: "high",
+        source: "wealthfolio",
+      });
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "AAPL",
+          ISIN: "US0378331005",
+          ListingExchange: "NASDAQ",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]._resolvedTicker).toBe("AAPL");
+      expect(result[0]._tickerConfidence).toBe("high");
+    });
+
+    it("should handle cash symbols without resolution", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "$CASH-USD",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]._resolvedTicker).toBe("$CASH-USD");
+      expect(result[0]._tickerConfidence).toBe("high");
+    });
+
+    it("should add exchange suffix for low confidence results", async () => {
+      const { resolveTicker, extractTickersToResolve } = await import(
+        "../lib/ticker-resolver"
+      );
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([
+        { symbol: "HSBA", isin: "GB0005405286", exchange: "LSE" },
+      ]);
+
+      // Return low confidence result
+      vi.mocked(resolveTicker).mockResolvedValueOnce({
+        yahooTicker: "HSBA",
+        confidence: "low",
+        source: "fallback",
+      });
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "HSBA",
+          ISIN: "GB0005405286",
+          ListingExchange: "LSE",
+          CurrencyPrimary: "GBP",
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      // Should add .L suffix for LSE
+      expect(result[0]._resolvedTicker).toBe("HSBA.L");
+      expect(result[0]._tickerConfidence).toBe("medium");
+    });
+
+    it("should handle resolution errors gracefully", async () => {
+      const { resolveTicker, extractTickersToResolve } = await import(
+        "../lib/ticker-resolver"
+      );
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([
+        { symbol: "AAPL", isin: "US0378331005", exchange: "NASDAQ" },
+      ]);
+
+      // Simulate resolution error
+      vi.mocked(resolveTicker).mockRejectedValueOnce(new Error("API Error"));
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "AAPL",
+          ISIN: "US0378331005",
+          ListingExchange: "NASDAQ",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      // Should fallback to original symbol (no suffix for US)
+      expect(result[0]._resolvedTicker).toBe("AAPL");
+      expect(result[0]._tickerConfidence).toBe("low");
+    });
+
+    it("should call progress callback", async () => {
+      const { resolveTicker, extractTickersToResolve } = await import(
+        "../lib/ticker-resolver"
+      );
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([
+        { symbol: "AAPL", isin: "US0378331005", exchange: "NASDAQ" },
+        { symbol: "MSFT", isin: "US5949181045", exchange: "NASDAQ" },
+      ]);
+
+      vi.mocked(resolveTicker).mockResolvedValue({
+        yahooTicker: "AAPL",
+        confidence: "high",
+        source: "wealthfolio",
+      });
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "AAPL",
+          ISIN: "US0378331005",
+          ListingExchange: "NASDAQ",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+        {
+          Symbol: "MSFT",
+          ISIN: "US5949181045",
+          ListingExchange: "NASDAQ",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const progressCallback = vi.fn();
+      await resolveTickersFromIBKR(data, progressCallback);
+
+      expect(progressCallback).toHaveBeenCalledTimes(2);
+      expect(progressCallback).toHaveBeenCalledWith(1, 2);
+      expect(progressCallback).toHaveBeenCalledWith(2, 2);
+    });
+
+    it("should infer suffix from currency when no ISIN/exchange", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "HSBA",
+          CurrencyPrimary: "GBP",
+          // No ISIN or ListingExchange
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      // Should add .L suffix for GBP
+      expect(result[0]._resolvedTicker).toBe("HSBA.L");
+      expect(result[0]._tickerConfidence).toBe("medium");
+      expect(result[0]._tickerSource).toBe("currency-inferred");
+    });
+
+    it("should handle Hong Kong stocks with currency inference", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "700",
+          CurrencyPrimary: "HKD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result).toHaveLength(1);
+      // Should pad to 4 digits and add .HK
+      expect(result[0]._resolvedTicker).toBe("0700.HK");
+    });
+
+    it("should pass search function to resolveTicker", async () => {
+      const { resolveTicker, extractTickersToResolve } = await import(
+        "../lib/ticker-resolver"
+      );
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([
+        { symbol: "AAPL", isin: "US0378331005", exchange: "NASDAQ" },
+      ]);
+
+      vi.mocked(resolveTicker).mockResolvedValueOnce({
+        yahooTicker: "AAPL",
+        confidence: "high",
+        source: "wealthfolio",
+      });
+
+      const mockSearchFn = vi.fn();
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "AAPL",
+          ISIN: "US0378331005",
+          ListingExchange: "NASDAQ",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      await resolveTickersFromIBKR(data, undefined, mockSearchFn);
+
+      expect(resolveTicker).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ searchFn: mockSearchFn })
+      );
+    });
+
+    it("should handle empty data array", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const result = await resolveTickersFromIBKR([]);
+
+      expect(result).toHaveLength(0);
+    });
+
+    it("should not modify original data array", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        {
+          Symbol: "$CASH-USD",
+          CurrencyPrimary: "USD",
+        } as ProcessedIBKRRow,
+      ];
+
+      const originalData = [...data];
+      await resolveTickersFromIBKR(data);
+
+      // Original should not be mutated (function creates copy)
+      expect(data[0]).toEqual(originalData[0]);
+    });
+
+    it("should handle multiple currencies", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        { Symbol: "NESN", CurrencyPrimary: "CHF" } as ProcessedIBKRRow,
+        { Symbol: "SAP", CurrencyPrimary: "EUR" } as ProcessedIBKRRow,
+        { Symbol: "BHP", CurrencyPrimary: "AUD" } as ProcessedIBKRRow,
+        { Symbol: "EQNR", CurrencyPrimary: "NOK" } as ProcessedIBKRRow,
+        { Symbol: "RY", CurrencyPrimary: "CAD" } as ProcessedIBKRRow,
+        { Symbol: "7203", CurrencyPrimary: "JPY" } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      expect(result[0]._resolvedTicker).toBe("NESN.SW"); // CHF
+      expect(result[1]._resolvedTicker).toBe("SAP.DE"); // EUR
+      expect(result[2]._resolvedTicker).toBe("BHP.AX"); // AUD
+      expect(result[3]._resolvedTicker).toBe("EQNR.OL"); // NOK
+      expect(result[4]._resolvedTicker).toBe("RY.TO"); // CAD
+      expect(result[5]._resolvedTicker).toBe("7203.T"); // JPY
+    });
+
+    it("should not add duplicate suffix to already suffixed symbols", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        { Symbol: "HSBA.L", CurrencyPrimary: "GBP" } as ProcessedIBKRRow,
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      // Should not add another .L
+      expect(result[0]._resolvedTicker).toBe("HSBA.L");
+    });
+
+    it("should use fallback for unknown currencies", async () => {
+      const { extractTickersToResolve } = await import("../lib/ticker-resolver");
+
+      vi.mocked(extractTickersToResolve).mockReturnValueOnce([]);
+
+      const data: ProcessedIBKRRow[] = [
+        { Symbol: "XYZ", CurrencyPrimary: "ZAR" } as ProcessedIBKRRow, // South African Rand
+      ];
+
+      const result = await resolveTickersFromIBKR(data);
+
+      // Should return unchanged for unknown currency
+      expect(result[0]._resolvedTicker).toBe("XYZ");
     });
   });
 });

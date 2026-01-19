@@ -5,6 +5,8 @@
  * Used by both activity-converter (for imports) and activity-deduplicator (for fingerprinting).
  */
 
+import { MAX_REASONABLE_DIVIDEND_PER_SHARE } from "./constants";
+
 /**
  * Parsed dividend information
  */
@@ -30,27 +32,61 @@ export interface DividendInfo {
 export function parseDividendInfo(activityDescription: string | undefined | null): DividendInfo | null {
   if (!activityDescription) return null;
 
-  // Try format with "per Share"
+  // Normalize whitespace (handle multiple spaces, tabs, etc.)
+  const normalized = activityDescription.replace(/\s+/g, " ").trim();
+
+  // Try format with "per Share" (most common)
   // Pattern: "Cash Dividend XXX N.NNN per Share"
-  let match = /Cash Dividend ([A-Z]{3}) ([\d.]+) per Share/i.exec(activityDescription);
+  // Currency: 2-4 uppercase letters to handle standard (USD, EUR) and special cases (USDT, etc.)
+  let match = /Cash Dividend ([A-Z]{2,4}) ([\d.]+) per Share/i.exec(normalized);
   if (match) {
-    return {
-      currency: match[1],
-      perShare: parseFloat(match[2]),
-    };
+    const result = validateAndCreateResult(match[1], match[2]);
+    if (result) return result;
   }
 
   // Try format without "per Share" (e.g., "Cash Dividend HKD 0.40 (Ordinary")
-  // Pattern: "Cash Dividend XXX N.NN" followed by space or (
-  match = /Cash Dividend ([A-Z]{3}) ([\d.]+)(?:\s|\()/i.exec(activityDescription);
+  // Pattern: "Cash Dividend XXX N.NN" followed by space, ( or end of string
+  match = /Cash Dividend ([A-Z]{2,4}) ([\d.]+)(?:\s|\(|$)/i.exec(normalized);
   if (match) {
-    return {
-      currency: match[1],
-      perShare: parseFloat(match[2]),
-    };
+    const result = validateAndCreateResult(match[1], match[2]);
+    if (result) return result;
+  }
+
+  // Try more flexible format for edge cases
+  // Pattern: Any "Dividend" followed by currency and amount
+  match = /Dividend[^A-Z]*([A-Z]{2,4})\s+([\d.]+)/i.exec(normalized);
+  if (match) {
+    const result = validateAndCreateResult(match[1], match[2]);
+    if (result) return result;
   }
 
   return null;
+}
+
+/**
+ * Validate parsed values and create DividendInfo if valid
+ */
+function validateAndCreateResult(currency: string, amountStr: string): DividendInfo | null {
+  // Validate currency is uppercase
+  const normalizedCurrency = currency.toUpperCase();
+
+  // Parse and validate amount
+  const perShare = parseFloat(amountStr);
+
+  // Reject invalid amounts
+  if (isNaN(perShare) || perShare <= 0) {
+    return null;
+  }
+
+  // Reject unreasonably large amounts (likely parsing error)
+  if (perShare > MAX_REASONABLE_DIVIDEND_PER_SHARE) {
+    return null;
+  }
+
+  return {
+    currency: normalizedCurrency,
+    perShare,
+  };
 }
 
 /**

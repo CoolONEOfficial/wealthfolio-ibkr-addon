@@ -834,7 +834,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('BUY');
       expect(activities[0].quantity).toBe(100);
@@ -856,7 +856,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-20',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('SELL');
       expect(activities[0].quantity).toBe(100);
@@ -881,7 +881,7 @@ describe('Activity Converter', () => {
         { currency: 'HKD', name: 'IBKR - HKD' },
       ];
 
-      const activities = await convertToActivityImports(rows, accountsWithHKD);
+      const { activities } = await convertToActivityImports(rows, accountsWithHKD);
       expect(activities).toHaveLength(1);
       expect(activities[0].fee).toBe(3.5); // 1.00 + 2.50
     });
@@ -897,7 +897,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-10',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('DEPOSIT');
       expect(activities[0].amount).toBe(5000);
@@ -914,7 +914,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('WITHDRAWAL');
       expect(activities[0].amount).toBe(1000); // Should be absolute
@@ -930,7 +930,7 @@ describe('Activity Converter', () => {
         Description: 'Market data fee',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('FEE');
       expect(activities[0].amount).toBe(5);
@@ -946,7 +946,7 @@ describe('Activity Converter', () => {
         Description: 'Credit interest',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('INTEREST');
     });
@@ -962,7 +962,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('TRANSFER_IN');
     });
@@ -976,7 +976,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('TRANSFER_OUT');
       expect(activities[0].currency).toBe('GBP');
@@ -1007,7 +1007,7 @@ describe('Activity Converter', () => {
         },
       ];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
       expect(dividend?.currency).toBe('USD');
@@ -1042,7 +1042,7 @@ describe('Activity Converter', () => {
         { currency: 'NOK', name: 'IBKR - NOK' },
       ];
 
-      const activities = await convertToActivityImports(rows, accountsWithNOK);
+      const { activities } = await convertToActivityImports(rows, accountsWithNOK);
       const dividend = activities.find(a => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
       expect(dividend?.currency).toBe('NOK');
@@ -1060,7 +1060,7 @@ describe('Activity Converter', () => {
         Date: '2024-02-01',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].activityType).toBe('TAX');
       expect(activities[0].currency).toBe('USD');
@@ -1077,7 +1077,7 @@ describe('Activity Converter', () => {
         Date: '2024-02-01',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       // TTAX should use parsed amount (6) not TradeMoney (4.50)
       expect(activities[0].amount).toBe(6);
     });
@@ -1095,7 +1095,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].currency).toBe('USD');
     });
 
@@ -1110,7 +1110,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].currency).toBe('GBP');
     });
 
@@ -1125,7 +1125,7 @@ describe('Activity Converter', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities[0].currency).toBe('AUD');
     });
   });
@@ -1143,7 +1143,7 @@ describe('Activity Converter', () => {
       }];
 
       // Only USD, GBP, EUR, AUD accounts available
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
       expect(activities).toHaveLength(0);
     });
   });
@@ -1278,7 +1278,7 @@ describe('Integration Scenarios', () => {
       ];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       // Should have at least the valid trades
       expect(activities.length).toBeGreaterThanOrEqual(2);
@@ -1296,7 +1296,7 @@ describe('Integration Scenarios', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       // Should still create activity with whatever date value
       expect(activities).toHaveLength(1);
@@ -1318,7 +1318,7 @@ describe('Integration Scenarios', () => {
         { currency: 'AUD', name: 'Test AUD' },
       ];
 
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const usd = activities.filter(a => a.currency === 'USD');
       const gbp = activities.filter(a => a.currency === 'GBP');
@@ -1383,7 +1383,7 @@ describe('Integration Scenarios', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].quantity).toBe(10000000);
       expect(activities[0].amount).toBe(10000); // 10M * 0.001
@@ -1401,7 +1401,7 @@ describe('Integration Scenarios', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].quantity).toBe(0.001);
       expect(activities[0].amount).toBe(500);
@@ -1458,7 +1458,7 @@ describe('Duplicate Transaction Scenarios', () => {
       ];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(2);
       expect(activities[0].quantity).toBe(100);
@@ -1472,7 +1472,7 @@ describe('Duplicate Transaction Scenarios', () => {
       ];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(2);
       expect(activities[0].date).toBe('2024-01-15');
@@ -1608,7 +1608,7 @@ describe('Account Group Scenarios', () => {
         { currency: 'GBP', name: 'IBKR Main - GBP' },
       ];
 
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
       expect(activities).toHaveLength(1);
       expect(activities[0].currency).toBe('GBP');
     });
@@ -1625,7 +1625,7 @@ describe('Account Group Scenarios', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'IBKR - USD' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(1);
     });
@@ -1645,7 +1645,7 @@ describe('Account Group Scenarios', () => {
         { currency: 'CHF', name: 'Test - CHF' },
       ];
 
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
       expect(activities).toHaveLength(4);
     });
   });
@@ -1663,7 +1663,7 @@ describe('Account Group Scenarios', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test - USD' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(0);
     });
@@ -1675,7 +1675,7 @@ describe('Account Group Scenarios', () => {
       ];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       // Only USD transaction should be processed
       expect(activities).toHaveLength(1);
@@ -1694,7 +1694,7 @@ describe('Account Group Scenarios', () => {
       }];
 
       const accountPreviews: any[] = [];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(0);
     });
@@ -1721,7 +1721,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'HKD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(1);
       expect(activities[0].currency).toBe('HKD');
@@ -1739,7 +1739,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'JPY', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('JPY');
     });
@@ -1756,7 +1756,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'NOK', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('NOK');
     });
@@ -1773,7 +1773,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('USD');
     });
@@ -1790,7 +1790,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'SGD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('SGD');
     });
@@ -1809,7 +1809,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'CHF', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('CHF');
     });
@@ -1826,7 +1826,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'EUR', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('EUR');
     });
@@ -1843,7 +1843,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'EUR', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('EUR');
     });
@@ -1862,7 +1862,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'SEK', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('SEK');
     });
@@ -1879,7 +1879,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'DKK', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('DKK');
     });
@@ -1898,7 +1898,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'EUR', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('EUR');
     });
@@ -1914,7 +1914,7 @@ describe('Exotic Currencies and Exchanges', () => {
       }];
 
       const accountPreviews = [{ currency: 'CAD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('CAD');
     });
@@ -2027,7 +2027,7 @@ describe('Preprocessor Edge Cases', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].amount).toBe(0.01);
     });
@@ -2042,7 +2042,7 @@ describe('Preprocessor Edge Cases', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].amount).toBe(10000000);
     });
@@ -2197,7 +2197,7 @@ describe('Real-World Edge Cases', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].quantity).toBe(400);
       expect(activities[0].unitPrice).toBe(37.5);
@@ -2217,7 +2217,7 @@ describe('Real-World Edge Cases', () => {
       }];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities[0].currency).toBe('USD'); // PINK -> USD
     });
@@ -2232,7 +2232,7 @@ describe('Real-World Edge Cases', () => {
       ];
 
       const accountPreviews = [{ currency: 'USD', name: 'Test' }];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(3);
       expect(activities.reduce((sum, a) => sum + a.quantity, 0)).toBe(100);

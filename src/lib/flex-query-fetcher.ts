@@ -11,7 +11,7 @@
  * - GetStatement endpoint: /GetStatement?t={TOKEN}&q={REFERENCE_CODE}&v=3
  */
 
-import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS, FLEX_QUERY_ABSOLUTE_TIMEOUT_MS } from "./constants";
+import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS, FLEX_QUERY_ABSOLUTE_TIMEOUT_MS, MIN_TOKEN_LENGTH, MAX_TOKEN_LENGTH, MAX_QUERY_ID_LENGTH } from "./constants";
 
 export interface FlexQueryConfig {
   token: string;
@@ -27,11 +27,11 @@ export function validateFlexToken(token: string): { valid: boolean; error?: stri
     return { valid: false, error: "Token is required" };
   }
   const trimmed = token.trim();
-  if (trimmed.length < 16) {
-    return { valid: false, error: "Token appears too short (minimum 16 characters)" };
+  if (trimmed.length < MIN_TOKEN_LENGTH) {
+    return { valid: false, error: `Token appears too short (minimum ${MIN_TOKEN_LENGTH} characters)` };
   }
-  if (trimmed.length > 128) {
-    return { valid: false, error: "Token appears too long (maximum 128 characters)" };
+  if (trimmed.length > MAX_TOKEN_LENGTH) {
+    return { valid: false, error: `Token appears too long (maximum ${MAX_TOKEN_LENGTH} characters)` };
   }
   // IBKR tokens are alphanumeric
   if (!/^[a-zA-Z0-9]+$/.test(trimmed)) {
@@ -52,8 +52,8 @@ export function validateQueryId(queryId: string): { valid: boolean; error?: stri
   if (!/^\d+$/.test(trimmed)) {
     return { valid: false, error: "Query ID should be numeric" };
   }
-  if (trimmed.length > 20) {
-    return { valid: false, error: "Query ID appears too long" };
+  if (trimmed.length > MAX_QUERY_ID_LENGTH) {
+    return { valid: false, error: `Query ID appears too long (maximum ${MAX_QUERY_ID_LENGTH} characters)` };
   }
   return { valid: true };
 }
@@ -151,7 +151,55 @@ function getHttpClient(): HttpClient {
 }
 
 /**
+ * Sanitize a string from XML response to prevent XSS/injection attacks
+ * - Removes any HTML tags
+ * - Limits string length
+ * - Escapes special characters
+ */
+function sanitizeXmlString(value: string | undefined, maxLength: number = 500): string | undefined {
+  if (!value) return undefined;
+
+  // Remove any HTML-like tags
+  let sanitized = value.replace(/<[^>]*>/g, "");
+
+  // Decode common XML entities
+  sanitized = sanitized
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+
+  // Truncate to prevent excessively long strings
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength) + "...";
+  }
+
+  return sanitized.trim();
+}
+
+/**
+ * Validate that a URL is from an expected IBKR domain
+ */
+function isValidIBKRUrl(url: string | undefined): boolean {
+  if (!url) return false;
+
+  try {
+    const parsed = new URL(url);
+    // Only allow HTTPS URLs from IBKR domains
+    return (
+      parsed.protocol === "https:" &&
+      (parsed.hostname.endsWith(".interactivebrokers.com") ||
+        parsed.hostname.endsWith(".ibkr.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Parse XML response to extract status and data
+ * Includes sanitization to prevent injection attacks
  */
 function parseFlexResponse(xml: string): {
   status: string;
@@ -162,23 +210,24 @@ function parseFlexResponse(xml: string): {
 } {
   // Extract status
   const statusMatch = /<Status>([^<]+)<\/Status>/i.exec(xml);
-  const status = statusMatch ? statusMatch[1] : "";
+  const status = sanitizeXmlString(statusMatch?.[1]) || "";
 
-  // Extract reference code
+  // Extract reference code (alphanumeric only for safety)
   const refMatch = /<ReferenceCode>([^<]+)<\/ReferenceCode>/i.exec(xml);
-  const referenceCode = refMatch ? refMatch[1] : undefined;
+  const referenceCode = refMatch?.[1]?.replace(/[^a-zA-Z0-9]/g, "") || undefined;
 
-  // Extract URL
+  // Extract URL (validate it's from an IBKR domain)
   const urlMatch = /<Url>([^<]+)<\/Url>/i.exec(xml);
-  const url = urlMatch ? urlMatch[1] : undefined;
+  const extractedUrl = urlMatch?.[1];
+  const url = isValidIBKRUrl(extractedUrl) ? extractedUrl : undefined;
 
-  // Extract error code
+  // Extract error code (numeric only)
   const errorCodeMatch = /<ErrorCode>(\d+)<\/ErrorCode>/i.exec(xml);
   const errorCode = errorCodeMatch ? parseInt(errorCodeMatch[1], 10) : undefined;
 
-  // Extract error message
+  // Extract error message (sanitized)
   const errorMsgMatch = /<ErrorMessage>([^<]+)<\/ErrorMessage>/i.exec(xml);
-  const errorMessage = errorMsgMatch ? errorMsgMatch[1] : undefined;
+  const errorMessage = sanitizeXmlString(errorMsgMatch?.[1], 200);
 
   return { status, referenceCode, url, errorCode, errorMessage };
 }

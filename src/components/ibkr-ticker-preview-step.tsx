@@ -9,6 +9,7 @@ import {
   AccordionTrigger,
 } from "./simple-accordion";
 import type { TransactionGroup } from "../types";
+import { debug } from "../lib/debug-logger";
 
 interface IBKRTickerPreviewStepProps {
   isResolving: boolean;
@@ -35,7 +36,7 @@ export const IBKRTickerPreviewStep = ({
   const canProceed = !isResolving && totalTransactions > 0;
 
   // Debug logging
-  console.log("IBKRTickerPreviewStep render:", {
+  debug.log("IBKRTickerPreviewStep render:", {
     isResolving,
     totalTransactions,
     canProceed,
@@ -44,7 +45,7 @@ export const IBKRTickerPreviewStep = ({
   });
 
   const handleStartImportClick = () => {
-    console.log("Start Import button clicked!", { canProceed, isResolving, totalTransactions });
+    debug.log("Start Import button clicked!", { canProceed, isResolving, totalTransactions });
     if (canProceed) {
       onNext();
     }

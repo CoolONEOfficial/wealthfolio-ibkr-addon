@@ -1,4 +1,5 @@
 import { IBKRTransactionRow, IBKRClassification, CsvRowData } from "../presets/types";
+import { debug } from "./debug-logger";
 import { normalizeNumericValue } from "./validation-utils";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
 
@@ -56,10 +57,10 @@ function classifyIBKRTransaction(row: IBKRTransactionRow): IBKRClassification {
   if (transactionType === "INTERNAL" && transferDirection && row.AssetClass === "CASH") {
     const amount = normalizeNumericValue(row.TradeMoney);
 
-    console.log(`[IBKR Classifier] Found INTERNAL transfer: Direction="${transferDirection}", TradeMoney="${row.TradeMoney}", parsed amount=${amount}`);
+    debug.log(`[IBKR Classifier] Found INTERNAL transfer: Direction="${transferDirection}", TradeMoney="${row.TradeMoney}", parsed amount=${amount}`);
 
     if (transferDirection === "IN" && amount !== undefined && amount !== 0) {
-      console.log(`[IBKR Classifier] Classified as TRANSFER_IN`);
+      debug.log(`[IBKR Classifier] Classified as TRANSFER_IN`);
       return {
         classification: "TRANSFER_IN",
         shouldImport: true,
@@ -67,7 +68,7 @@ function classifyIBKRTransaction(row: IBKRTransactionRow): IBKRClassification {
         originalRow: row,
       };
     } else if (transferDirection === "OUT" && amount !== undefined && amount !== 0) {
-      console.log(`[IBKR Classifier] Classified as TRANSFER_OUT`);
+      debug.log(`[IBKR Classifier] Classified as TRANSFER_OUT`);
       return {
         classification: "TRANSFER_OUT",
         shouldImport: true,
@@ -348,11 +349,11 @@ function classifyIBKRTransaction(row: IBKRTransactionRow): IBKRClassification {
     // After CSV parsing, TradeMoney contains the amount
     const amount = normalizeNumericValue(row.TradeMoney);
 
-    console.log(`[IBKR Classifier] Found Deposits/Withdrawals: TradeMoney="${row.TradeMoney}", parsed amount=${amount}`);
+    debug.log(`[IBKR Classifier] Found Deposits/Withdrawals: TradeMoney="${row.TradeMoney}", parsed amount=${amount}`);
 
     if (amount !== undefined) {
       if (amount > 0) {
-        console.log(`[IBKR Classifier] Classified as DEPOSIT (amount > 0)`);
+        debug.log(`[IBKR Classifier] Classified as DEPOSIT (amount > 0)`);
         return {
           classification: "DEPOSIT",
           shouldImport: true,
@@ -360,7 +361,7 @@ function classifyIBKRTransaction(row: IBKRTransactionRow): IBKRClassification {
           originalRow: row,
         };
       } else if (amount < 0) {
-        console.log(`[IBKR Classifier] Classified as WITHDRAWAL (amount < 0)`);
+        debug.log(`[IBKR Classifier] Classified as WITHDRAWAL (amount < 0)`);
         return {
           classification: "WITHDRAWAL",
           shouldImport: true,
@@ -763,6 +764,10 @@ export function preprocessIBKRData(data: CsvRowData[]): {
         const ibCommission = normalizeNumericValue(row.IBCommission);
         const commissionCurrency = row.IBCommissionCurrency || sourceCurrency;
 
+        // Build all related rows first to ensure atomic addition (prevents inconsistent state
+        // if we add fee but fail before adding the transfer pair)
+        const rowsToAdd: CsvRowData[] = [];
+
         if (ibCommission !== undefined && ibCommission !== 0) {
           const feeRow: CsvRowData = {
             ...row,
@@ -777,7 +782,7 @@ export function preprocessIBKRData(data: CsvRowData[]): {
             Description: `FX commission: ${symbol}:${tradeDate}:${tradeId}`,
             _IBKR_TYPE: "IBKR_FEE",
           };
-          processedData.push(feeRow);
+          rowsToAdd.push(feeRow);
         }
 
         if (tradeMoney !== undefined && tradePrice !== undefined && tradePrice !== 0) {
@@ -801,7 +806,7 @@ export function preprocessIBKRData(data: CsvRowData[]): {
             // For BUY (FX_WITHDRAWAL from target): source side is TRANSFER_IN (we're receiving source currency)
             _IBKR_TYPE: classification.classification === "FX_DEPOSIT" ? "IBKR_TRANSFER_OUT" : "IBKR_TRANSFER_IN",
           };
-          processedData.push(sourceRow);
+          rowsToAdd.push(sourceRow);
 
           // Set up TARGET side transaction (the current processedRow)
           processedRow.TradeMoney = targetAmount.toString();
@@ -814,6 +819,11 @@ export function preprocessIBKRData(data: CsvRowData[]): {
           // For SELL (FX_DEPOSIT): target side is TRANSFER_IN (we're receiving target currency)
           // For BUY (FX_WITHDRAWAL): target side is TRANSFER_OUT (we're giving target currency)
           processedRow._IBKR_TYPE = classification.classification === "FX_DEPOSIT" ? "IBKR_TRANSFER_IN" : "IBKR_TRANSFER_OUT";
+        }
+
+        // Add all rows atomically after successful preparation
+        for (const rowToAdd of rowsToAdd) {
+          processedData.push(rowToAdd);
         }
       } else {
         // For other cash transactions (FEE, INTEREST)

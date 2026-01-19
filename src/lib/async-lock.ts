@@ -1,3 +1,5 @@
+import { debug } from "./debug-logger";
+
 /**
  * A simple async mutex/lock for preventing concurrent execution.
  *
@@ -44,24 +46,22 @@ export class AsyncLock {
   }
 
   private release(): void {
-    if (this.queue.length > 0) {
-      // Give lock to next waiter
+    // Use iterative approach to prevent stack overflow if multiple callbacks throw
+    while (this.queue.length > 0) {
       const next = this.queue.shift();
       if (next) {
         try {
           next();
+          return; // Successfully handed off lock to next waiter
         } catch (error) {
-          // If the callback throws, still release the lock to prevent deadlock
-          console.error("[AsyncLock] Queue callback error:", error);
-          this.locked = false;
+          // If the callback throws, log and continue to next item to prevent deadlock
+          debug.error("[AsyncLock] Queue callback error:", error);
+          // Loop continues to process next item (iterative, not recursive)
         }
-      } else {
-        // Shouldn't happen but handle defensively
-        this.locked = false;
       }
-    } else {
-      this.locked = false;
     }
+    // No more items in queue, release lock
+    this.locked = false;
   }
 }
 

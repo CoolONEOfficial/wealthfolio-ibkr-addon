@@ -1,6 +1,8 @@
 import { Card, Page, PageContent, PageHeader } from "@wealthfolio/ui";
 import type { Account, AddonContext, ActivityImport } from "@wealthfolio/addon-sdk";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { debug } from "../lib/debug-logger";
+import { getErrorMessage } from "../lib/shared-utils";
 import { detectCurrenciesFromIBKR } from "../lib/currency-detector";
 import { generateAccountNames } from "../lib/account-name-generator";
 import { fetchFlexQuery, setHttpClient, validateFlexToken, validateQueryId } from "../lib/flex-query-fetcher";
@@ -77,6 +79,18 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
   const [importProgress, setImportProgress] = useState<ProgressInfo | undefined>();
   const [importResults, setImportResults] = useState<ImportResult[]>([]);
 
+  // Track if component is mounted (for async operation cleanup)
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // AbortController for cancelling in-progress operations on reset
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   // Initialize HTTP client
   useEffect(() => {
     if (ctx?.api?.http) {
@@ -93,9 +107,10 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       if (ctx.api.accounts) {
         try {
           const allAccounts = await ctx.api.accounts.getAll();
+          if (!isMountedRef.current) return;
           setAccounts(allAccounts);
         } catch (e) {
-          console.error("Failed to load accounts:", e);
+          debug.error("Failed to load accounts:", e);
         }
       }
 
@@ -106,10 +121,11 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
             ctx.api.secrets.get(SECRET_FLEX_TOKEN),
             ctx.api.secrets.get(SECRET_QUERY_ID),
           ]);
+          if (!isMountedRef.current) return;
           if (savedToken) setFlexToken(savedToken);
           if (savedQueryId) setFlexQueryId(savedQueryId);
         } catch (e) {
-          console.error("Failed to load saved credentials:", e);
+          debug.error("Failed to load saved credentials:", e);
         }
       }
     };
@@ -117,23 +133,38 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     loadData();
   }, [ctx]);
 
-  // Get unique groups from accounts
-  const existingGroups = [...new Set(accounts.map((a) => a.group).filter(Boolean))] as string[];
+  // Get unique groups from accounts (memoized to avoid recalculation on every render)
+  const existingGroups = useMemo(
+    () => [...new Set(accounts.map((a) => a.group).filter(Boolean))] as string[],
+    [accounts]
+  );
 
   // Refresh accounts list from API
   const refreshAccounts = async () => {
     if (ctx?.api?.accounts) {
       try {
         const allAccounts = await ctx.api.accounts.getAll();
+        if (!isMountedRef.current) return;
         setAccounts(allAccounts);
       } catch (e) {
-        console.error("Failed to refresh accounts:", e);
+        debug.error("Failed to refresh accounts:", e);
       }
     }
   };
 
   // Reset the entire import process
   const resetImportProcess = async () => {
+    // Cancel any in-progress async operations
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // Reset loading states first
+    setIsLoadingData(false);
+    setIsResolving(false);
+    setIsImporting(false);
+
     // Refresh accounts to pick up any newly created accounts from previous import
     await refreshAccounts();
 
@@ -145,84 +176,13 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     setTransactionGroups([]);
     setImportResults([]);
     setLoadingMessage("");
+    setResolutionProgress(undefined);
+    setImportProgress(undefined);
     resetParserStates();
   };
 
-  // Step 1: Load data from selected source
-  const handleLoadData = async () => {
-    setIsLoadingData(true);
-
-    try {
-      if (dataSource === "flexquery") {
-        // Fetch from Flex Query API
-        setLoadingMessage("Connecting to IBKR...");
-
-        const result = await fetchFlexQuery(
-          { token: flexToken, queryId: flexQueryId },
-          {
-            onProgress: (msg) => setLoadingMessage(msg),
-          }
-        );
-
-        if (!result.success || !result.csv) {
-          throw new Error(result.error || "Failed to fetch data from IBKR");
-        }
-
-        // Save credentials if requested (with validation)
-        if (rememberCredentials && ctx?.api?.secrets) {
-          const tokenValidation = validateFlexToken(flexToken);
-          const queryIdValidation = validateQueryId(flexQueryId);
-
-          if (tokenValidation.valid && queryIdValidation.valid) {
-            await Promise.all([
-              ctx.api.secrets.set(SECRET_FLEX_TOKEN, flexToken.trim()),
-              ctx.api.secrets.set(SECRET_QUERY_ID, flexQueryId.trim()),
-            ]);
-          } else {
-            // Log validation failures but don't block the import
-            console.warn("Credential validation failed, not saving:", {
-              tokenError: tokenValidation.error,
-              queryIdError: queryIdValidation.error,
-            });
-          }
-        }
-
-        // Parse the fetched CSV
-        setLoadingMessage("Parsing transactions...");
-        const parsed = parseFlexQueryCSV(result.csv);
-
-        if (parsed.errors.length > 0) {
-          console.warn("Parse warnings:", parsed.errors);
-        }
-
-        setParsedData(parsed.rows);
-        setLoadingMessage("");
-        processDataToStep2(parsed.rows);
-
-      } else {
-        // Parse manual CSV files
-        setLoadingMessage("Parsing CSV files...");
-        await parseMultipleCsvFiles(selectedFiles);
-        // The useEffect below will handle advancing to step 2
-      }
-    } catch (error) {
-      console.error("Error loading data:", error);
-      const errorMessage = error instanceof Error ? error.message : "Failed to load data";
-      setLoadingMessage(`Error: ${errorMessage}`);
-      setIsLoadingData(false);
-    }
-  };
-
-  // Process manual CSV data when it's ready
-  useEffect(() => {
-    if (manualParsedData && manualParsedData.length > 0 && currentStep === 1 && !isParsing && dataSource === "manual") {
-      setParsedData(manualParsedData);
-      processDataToStep2(manualParsedData);
-    }
-  }, [manualParsedData, isParsing, currentStep, dataSource]);
-
-  // Process parsed data and advance to step 2
-  const processDataToStep2 = (data: CsvRowData[]) => {
+  // Process parsed data and advance to step 2 (memoized to prevent stale closures)
+  const processDataToStep2 = useCallback((data: CsvRowData[]) => {
     const currencies = detectCurrenciesFromIBKR(data);
     const accountNames = generateAccountNames(groupName, currencies);
 
@@ -249,14 +209,100 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     setIsLoadingData(false);
     setLoadingMessage("");
     setCurrentStep(2);
-  };
+  }, [groupName, accounts]);
 
-  // Step 2: Update account preview
-  const handleAccountPreviewChange = (index: number, name: string) => {
-    const newPreviews = [...accountPreviews];
-    newPreviews[index].name = name;
-    setAccountPreviews(newPreviews);
-  };
+  // Step 1: Load data from selected source (memoized to ensure stable reference)
+  const handleLoadData = useCallback(async () => {
+    setIsLoadingData(true);
+
+    try {
+      if (dataSource === "flexquery") {
+        // Fetch from Flex Query API
+        setLoadingMessage("Connecting to IBKR...");
+
+        const result = await fetchFlexQuery(
+          { token: flexToken, queryId: flexQueryId },
+          {
+            onProgress: (msg) => {
+              if (isMountedRef.current) setLoadingMessage(msg);
+            },
+          }
+        );
+
+        // Check if still mounted after async operation
+        if (!isMountedRef.current) return;
+
+        if (!result.success || !result.csv) {
+          throw new Error(result.error || "Failed to fetch data from IBKR");
+        }
+
+        // Save credentials if requested (with validation)
+        if (rememberCredentials && ctx?.api?.secrets) {
+          const tokenValidation = validateFlexToken(flexToken);
+          const queryIdValidation = validateQueryId(flexQueryId);
+
+          if (tokenValidation.valid && queryIdValidation.valid) {
+            await Promise.all([
+              ctx.api.secrets.set(SECRET_FLEX_TOKEN, flexToken.trim()),
+              ctx.api.secrets.set(SECRET_QUERY_ID, flexQueryId.trim()),
+            ]);
+          } else {
+            // Log validation failures but don't block the import
+            debug.warn("Credential validation failed, not saving:", {
+              tokenError: tokenValidation.error,
+              queryIdError: queryIdValidation.error,
+            });
+          }
+        }
+
+        // Check if still mounted before state updates
+        if (!isMountedRef.current) return;
+
+        // Parse the fetched CSV
+        setLoadingMessage("Parsing transactions...");
+        const parsed = parseFlexQueryCSV(result.csv);
+
+        if (parsed.errors.length > 0) {
+          debug.warn("Parse warnings:", parsed.errors);
+        }
+
+        setParsedData(parsed.rows);
+        setLoadingMessage("");
+        processDataToStep2(parsed.rows);
+
+      } else {
+        // Parse manual CSV files
+        setLoadingMessage("Parsing CSV files...");
+        await parseMultipleCsvFiles(selectedFiles);
+        // The useEffect below will handle advancing to step 2
+      }
+    } catch (error) {
+      debug.error("Error loading data:", error);
+      // Only update state if still mounted
+      if (!isMountedRef.current) return;
+      const errorMessage = error instanceof Error ? error.message : "Failed to load data";
+      // Reset loading state first, then set error message to prevent race condition
+      setIsLoadingData(false);
+      setLoadingMessage(`Error: ${errorMessage}`);
+    }
+  }, [dataSource, flexToken, flexQueryId, rememberCredentials, ctx, selectedFiles, processDataToStep2, parseMultipleCsvFiles]);
+
+  // Process manual CSV data when it's ready
+  useEffect(() => {
+    if (manualParsedData && manualParsedData.length > 0 && currentStep === 1 && !isParsing && dataSource === "manual") {
+      setParsedData(manualParsedData);
+      processDataToStep2(manualParsedData);
+    }
+  }, [manualParsedData, isParsing, currentStep, dataSource, processDataToStep2]);
+
+  // Step 2: Update account preview (memoized to prevent child re-renders)
+  const handleAccountPreviewChange = useCallback((index: number, name: string) => {
+    setAccountPreviews((prevPreviews) => {
+      const newPreviews = [...prevPreviews];
+      newPreviews[index].name = name;
+      return newPreviews;
+    });
+  }, []);
 
   // Step 2 → Step 3: Process and resolve tickers
   const handleProceedToStep3 = async () => {
@@ -274,27 +320,52 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
         accountPreviews,
         accounts
       );
+      // Check if still mounted after async operation
+      if (!isMountedRef.current) return;
       setAccounts(result.freshAccounts);
       updatedPreviews = result.updatedPreviews;
       setAccountPreviews(updatedPreviews);
     } catch (error) {
-      const msg = `Failed to refresh accounts: ${error instanceof Error ? error.message : String(error)}`;
-      console.error(msg);
+      if (!isMountedRef.current) return;
+      const msg = `Failed to refresh accounts: ${getErrorMessage(error)}`;
+      debug.error(msg);
       errors.push(msg);
       // Continue with existing accounts - non-fatal
     }
 
     // 2. Process data, resolve tickers, convert to activities
     try {
-      activitiesWithFX = await processAndResolveData(
+      const processResult = await processAndResolveData(
         parsedData,
         updatedPreviews,
         ctx?.api?.market?.searchTicker,
-        (current, total) => setResolutionProgress({ current, total })
+        (current, total) => {
+          if (isMountedRef.current) setResolutionProgress({ current, total });
+        }
       );
+      // Check if still mounted after async operation
+      if (!isMountedRef.current) return;
+      activitiesWithFX = processResult.activities;
+
+      // Log conversion errors for user visibility
+      if (processResult.conversionErrors.length > 0) {
+        const errorSummary = `${processResult.conversionErrors.length} transaction(s) failed to convert`;
+        debug.warn(errorSummary, processResult.conversionErrors);
+        errors.push(errorSummary);
+      }
+      if (processResult.skippedCount > 0) {
+        debug.log(`Skipped ${processResult.skippedCount} unrecognized transaction types`);
+      }
+      // Warn user about skipped FX conversions (missing accounts, invalid format, etc.)
+      if (processResult.skippedFXConversions.length > 0) {
+        const fxSummary = `${processResult.skippedFXConversions.length} FX conversion(s) skipped`;
+        debug.warn(fxSummary, processResult.skippedFXConversions);
+        errors.push(fxSummary);
+      }
     } catch (error) {
-      const msg = `Failed to process transactions: ${error instanceof Error ? error.message : String(error)}`;
-      console.error(msg);
+      if (!isMountedRef.current) return;
+      const msg = `Failed to process transactions: ${getErrorMessage(error)}`;
+      debug.error(msg);
       errors.push(msg);
       // This is fatal - cannot continue without activities
       setResolutionProgress(undefined);
@@ -305,24 +376,36 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     // 3. Fetch existing activities for deduplication
     let existingActivities: import("../types").ActivityFingerprint[] = [];
     try {
-      existingActivities = await fetchExistingActivitiesForDedup(
+      const fetchResult = await fetchExistingActivitiesForDedup(
         ctx?.api?.activities,
         updatedPreviews
       );
+      // Check if still mounted after async operation
+      if (!isMountedRef.current) return;
+      existingActivities = fetchResult.activities;
+      if (!fetchResult.complete) {
+        const msg = `Could not load activities from ${fetchResult.failedAccounts.length} account(s): ${fetchResult.failedAccounts.join(", ")}. Duplicates may occur for these accounts.`;
+        debug.warn(msg);
+        errors.push(msg);
+      }
     } catch (error) {
-      const msg = `Failed to fetch existing activities for deduplication: ${error instanceof Error ? error.message : String(error)}`;
-      console.warn(msg);
+      if (!isMountedRef.current) return;
+      const msg = `Failed to fetch existing activities for deduplication: ${getErrorMessage(error)}`;
+      debug.warn(msg);
       errors.push(msg);
       // Continue without deduplication - non-fatal but may create duplicates
     }
+
+    // Check mounted state before final state updates
+    if (!isMountedRef.current) return;
 
     // 4. Deduplicate activities
     let dedupedActivities = activitiesWithFX;
     try {
       dedupedActivities = deduplicateActivities(activitiesWithFX, existingActivities);
     } catch (error) {
-      const msg = `Deduplication failed, proceeding without: ${error instanceof Error ? error.message : String(error)}`;
-      console.warn(msg);
+      const msg = `Deduplication failed, proceeding without: ${getErrorMessage(error)}`;
+      debug.warn(msg);
       errors.push(msg);
       // Continue with original activities - non-fatal but may create duplicates
     }
@@ -333,14 +416,14 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       const groups = createTransactionGroups(updatedPreviews, groupedByCurrency);
       setTransactionGroups(groups);
     } catch (error) {
-      const msg = `Failed to group transactions: ${error instanceof Error ? error.message : String(error)}`;
-      console.error(msg);
+      const msg = `Failed to group transactions: ${getErrorMessage(error)}`;
+      debug.error(msg);
       errors.push(msg);
     }
 
     // Log any accumulated warnings
     if (errors.length > 0) {
-      console.warn(`Import preparation completed with ${errors.length} warning(s):`, errors);
+      debug.warn(`Import preparation completed with ${errors.length} warning(s):`, errors);
     }
 
     setResolutionProgress(undefined);
@@ -350,7 +433,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
   // Step 3 → Step 4: Import transactions
   const handleStartImport = async () => {
     if (!ctx?.api) {
-      console.error("No ctx.api available - cannot import!");
+      debug.error("No ctx.api available - cannot import!");
       return;
     }
 
@@ -361,9 +444,22 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     let currentProgress = 0;
     const totalSteps = accountPreviews.length + transactionGroups.length;
 
+    // Track created/existing accounts by currency (avoid mutating state directly)
+    const accountsByCurrency = new Map<string, Account>();
+
+    // Initialize with existing accounts from previews
+    for (const preview of accountPreviews) {
+      if (preview.existingAccount) {
+        accountsByCurrency.set(preview.currency, preview.existingAccount);
+      }
+    }
+
     try {
-      // Create accounts
+      // Create accounts that don't exist yet
       for (const preview of accountPreviews) {
+        // Check if still mounted before each iteration
+        if (!isMountedRef.current) return;
+
         if (!preview.existingAccount) {
           setImportProgress({
             current: ++currentProgress,
@@ -380,22 +476,64 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
               isDefault: false,
               isActive: true,
             });
-            preview.existingAccount = newAccount;
+            // Track in local map instead of mutating state
+            accountsByCurrency.set(preview.currency, newAccount);
           } catch (error) {
-            console.error(`Failed to create account ${preview.name}:`, error);
+            debug.error(`Failed to create account ${preview.name}:`, error);
           }
         } else {
           currentProgress++;
         }
       }
 
-      // Import transactions
+      // Pre-create any additional accounts needed for transaction currencies
+      // This prevents race conditions during the import phase
+      const allCurrenciesNeeded = new Set<string>();
       for (const group of transactionGroups) {
+        for (const txn of group.transactions) {
+          const txnCurrency = txn.currency || group.currency;
+          allCurrenciesNeeded.add(txnCurrency);
+        }
+      }
+
+      // Create any missing accounts before starting imports
+      for (const currency of allCurrenciesNeeded) {
+        if (!isMountedRef.current) return;
+        if (!accountsByCurrency.has(currency)) {
+          try {
+            const newAccountName = `${groupName} - ${currency}`;
+            const newAccount = await ctx.api.accounts.create({
+              name: newAccountName,
+              currency: currency,
+              group: groupName,
+              accountType: "SECURITIES",
+              isDefault: false,
+              isActive: true,
+            });
+            accountsByCurrency.set(currency, newAccount);
+            debug.log(`Pre-created account for currency: ${currency}`);
+          } catch (error) {
+            debug.error(`Failed to pre-create account for ${currency}:`, error);
+            // Continue - will fail during import if account truly doesn't exist
+          }
+        }
+      }
+
+      // Import transactions (all accounts should now exist)
+      for (const group of transactionGroups) {
+        // Check if still mounted before each iteration
+        if (!isMountedRef.current) return;
+
         setImportProgress({
           current: ++currentProgress,
           total: totalSteps,
           message: `Importing ${group.transactions.length} transactions to ${group.accountName}`,
         });
+
+        // Track totals for this group (including partial success)
+        let groupTotalImported = 0;
+        let groupTotalFailed = 0;
+        const groupErrors: string[] = [];
 
         try {
           // Group transactions by their actual currency
@@ -410,37 +548,19 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
             currencyGroup.push(txn);
           }
 
-          // Track totals for this group
-          let groupTotalImported = 0;
-
           // Import transactions grouped by their actual currency
           for (const [txnCurrency, transactions] of transactionsByCurrency) {
-            let targetAccount = accountPreviews.find((p) => p.currency === txnCurrency)?.existingAccount;
+            const targetAccount = accountsByCurrency.get(txnCurrency);
 
             if (!targetAccount) {
-              // Create account for this currency
-              const newAccountName = `${groupName} - ${txnCurrency}`;
-              const newAccount = await ctx.api.accounts.create({
-                name: newAccountName,
-                currency: txnCurrency,
-                group: groupName,
-                accountType: "SECURITIES",
-                isDefault: false,
-                isActive: true,
-              });
-              targetAccount = newAccount;
-              accountPreviews.push({
-                currency: txnCurrency,
-                name: newAccountName,
-                group: groupName,
-                transactionCount: transactions.length,
-                existingAccount: newAccount,
-              });
+              // Account creation failed earlier - skip these transactions
+              groupTotalFailed += transactions.length;
+              groupErrors.push(`No account available for currency ${txnCurrency}`);
+              continue;
             }
 
             // Set accountId on each transaction and import directly
             // (deduplication already happened in Step 3)
-            // targetAccount is guaranteed to exist here (either found or created above)
             const accountId = targetAccount.id;
             const transactionsWithAccountId = transactions.map((txn) => ({
               ...txn,
@@ -448,49 +568,57 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
             }));
 
             if (transactionsWithAccountId.length > 0) {
-              await ctx.api.activities.import(transactionsWithAccountId);
-              groupTotalImported += transactionsWithAccountId.length;
+              try {
+                await ctx.api.activities.import(transactionsWithAccountId);
+                groupTotalImported += transactionsWithAccountId.length;
+              } catch (importError) {
+                groupTotalFailed += transactionsWithAccountId.length;
+                groupErrors.push(`Import failed for ${txnCurrency}: ${getErrorMessage(importError)}`);
+              }
             }
           }
 
           results.push({
-            accountId: accountPreviews.find((p) => p.currency === group.currency)?.existingAccount?.id || "",
+            accountId: accountsByCurrency.get(group.currency)?.id || "",
             accountName: group.accountName,
             currency: group.currency,
             success: groupTotalImported,
-            failed: 0,
+            failed: groupTotalFailed,
             skipped: 0, // Duplicates already removed in Step 3
-            errors: [],
+            errors: groupErrors,
           });
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = getErrorMessage(error);
 
           results.push({
-            accountId: accountPreviews.find((p) => p.currency === group.currency)?.existingAccount?.id || "",
+            accountId: accountsByCurrency.get(group.currency)?.id || "",
             accountName: group.accountName,
             currency: group.currency,
-            success: 0,
-            failed: group.transactions.length,
+            success: groupTotalImported, // Reflect partial success
+            failed: group.transactions.length - groupTotalImported,
             skipped: 0,
-            errors: [errorMessage],
+            errors: [...groupErrors, errorMessage],
           });
         }
       }
 
+      // Check if still mounted before final state updates
+      if (!isMountedRef.current) return;
       setImportResults(results);
       setImportProgress(undefined);
       setIsImporting(false);
     } catch (error) {
-      console.error("Import failed:", error);
+      debug.error("Import failed:", error);
+      if (!isMountedRef.current) return;
       setImportProgress(undefined);
       setIsImporting(false);
     }
   };
 
-  // Navigation
-  const goToPreviousStep = () => {
-    if (currentStep > 1) setCurrentStep(currentStep - 1);
-  };
+  // Navigation (memoized to prevent child re-renders)
+  const goToPreviousStep = useCallback(() => {
+    setCurrentStep((prev) => (prev > 1 ? prev - 1 : prev));
+  }, []);
 
   // Render current step
   const renderStep = () => {

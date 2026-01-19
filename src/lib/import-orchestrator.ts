@@ -5,12 +5,14 @@
  * into smaller, more testable units.
  */
 
+import { debug } from "./debug-logger";
+import { getErrorMessage, formatDateToISO } from "./shared-utils";
 import type { Account, HostAPI, ActivityImport, QuoteSummary } from "@wealthfolio/addon-sdk";
-import type { AccountPreview, TransactionGroup, ActivityFingerprint } from "../types";
+import type { AccountPreview, TransactionGroup, ActivityFingerprint, ConversionError } from "../types";
 import { preprocessIBKRData } from "./ibkr-preprocessor";
 import { resolveTickersFromIBKR } from "./ticker-resolution-service";
 import { convertToActivityImports } from "./activity-converter";
-import { splitFXConversions } from "./fx-transaction-splitter";
+import { splitFXConversions, SkippedFXConversion } from "./fx-transaction-splitter";
 import { filterDuplicateActivities } from "./activity-deduplicator";
 import type { CsvRowData } from "../presets/types";
 
@@ -18,6 +20,29 @@ type AccountsAPI = HostAPI["accounts"];
 type ActivitiesAPI = HostAPI["activities"];
 type MarketSearchFn = ((query: string) => Promise<QuoteSummary[]>) | undefined;
 type ProgressCallback = (current: number, total: number) => void;
+
+/**
+ * Result of processing and resolving data
+ */
+export interface ProcessAndResolveResult {
+  activities: ActivityImport[];
+  conversionErrors: ConversionError[];
+  skippedCount: number;
+  /** FX conversions that were skipped (missing accounts, etc.) */
+  skippedFXConversions: SkippedFXConversion[];
+}
+
+/**
+ * Result of fetching existing activities for deduplication
+ */
+export interface FetchExistingResult {
+  /** Successfully fetched activities */
+  activities: ActivityFingerprint[];
+  /** Accounts that failed to load (partial failure) */
+  failedAccounts: string[];
+  /** Whether all accounts loaded successfully */
+  complete: boolean;
+}
 
 /**
  * Refresh accounts and update previews with fresh account data
@@ -33,8 +58,7 @@ export async function refreshAndUpdateAccountPreviews(
     try {
       freshAccounts = await accountsApi.getAll();
     } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      console.warn(`Failed to refresh accounts, using cached list: ${errorMsg}`);
+      debug.warn(`Failed to refresh accounts, using cached list: ${getErrorMessage(e)}`);
     }
   }
 
@@ -57,15 +81,23 @@ export async function processAndResolveData(
   accountPreviews: AccountPreview[],
   searchFn: MarketSearchFn,
   onProgress?: ProgressCallback
-): Promise<ActivityImport[]> {
+): Promise<ProcessAndResolveResult> {
   // Preprocess the raw data
   const { processedData } = preprocessIBKRData(parsedData);
 
   // Resolve tickers using market search
-  const resolvedData = await resolveTickersFromIBKR(processedData, onProgress, searchFn);
+  // Adapt MarketSearchFn to SearchTickerFn by wrapping results with index signature
+  const adaptedSearchFn = searchFn
+    ? async (query: string) => {
+        const results = await searchFn(query);
+        // Map QuoteSummary[] to TickerSearchResult[] by spreading to add index signature compatibility
+        return results.map((r) => ({ ...r } as { symbol: string; name?: string; exchange?: string; score?: number; [key: string]: unknown }));
+      }
+    : undefined;
+  const resolvedData = await resolveTickersFromIBKR(processedData, onProgress, adaptedSearchFn);
 
-  // Convert to activity imports
-  const activities = await convertToActivityImports(resolvedData, accountPreviews);
+  // Convert to activity imports (now returns errors too)
+  const conversionResult = await convertToActivityImports(resolvedData, accountPreviews);
 
   // Create accounts-by-currency map for FX splitting
   const accountsByCurrency = new Map<string, Account>(
@@ -75,7 +107,22 @@ export async function processAndResolveData(
   );
 
   // Split FX conversions
-  return splitFXConversions(activities, accountsByCurrency);
+  const fxSplitResult = splitFXConversions(conversionResult.activities, accountsByCurrency);
+
+  // Log skipped FX conversions as warnings
+  if (fxSplitResult.skippedConversions.length > 0) {
+    debug.warn(
+      `Skipped ${fxSplitResult.skippedConversions.length} FX conversion(s):`,
+      fxSplitResult.skippedConversions.map((s) => `${s.symbol}: ${s.reason}`)
+    );
+  }
+
+  return {
+    activities: fxSplitResult.transactions,
+    conversionErrors: conversionResult.errors,
+    skippedCount: conversionResult.skipped,
+    skippedFXConversions: fxSplitResult.skippedConversions,
+  };
 }
 
 /**
@@ -84,21 +131,33 @@ export async function processAndResolveData(
 export async function fetchExistingActivitiesForDedup(
   activitiesApi: ActivitiesAPI | undefined,
   accountPreviews: AccountPreview[]
-): Promise<ActivityFingerprint[]> {
+): Promise<FetchExistingResult> {
   const allExisting: ActivityFingerprint[] = [];
+  const failedAccounts: string[] = [];
 
   if (!activitiesApi) {
-    return allExisting;
+    return { activities: allExisting, failedAccounts: [], complete: true };
   }
 
   const existingAccounts = accountPreviews.filter((p) => p.existingAccount);
 
   for (const preview of existingAccounts) {
+    // Extra runtime guard - existingAccount should always exist due to filter above
+    const account = preview.existingAccount;
+    if (!account) {
+      debug.warn(`Skipping preview without account: ${preview.currency}`);
+      continue;
+    }
+
     try {
-      const accountActivities = await activitiesApi.getAll(preview.existingAccount!.id);
+      const accountActivities = await activitiesApi.getAll(account.id);
+      // Defensive check: ensure API returned an array
+      if (!Array.isArray(accountActivities)) {
+        debug.warn(`API returned non-array for account ${account.id}, skipping`);
+        continue;
+      }
       const mapped: ActivityFingerprint[] = accountActivities.map((a) => ({
-        activityDate:
-          a.date instanceof Date ? a.date.toISOString().split("T")[0] : String(a.date),
+        activityDate: formatDateToISO(a.date),
         assetId: a.assetSymbol,
         activityType: a.activityType,
         quantity: a.quantity,
@@ -110,12 +169,17 @@ export async function fetchExistingActivitiesForDedup(
       }));
       allExisting.push(...mapped);
     } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      console.warn(`Failed to fetch existing activities for ${preview.currency}: ${errorMsg}`);
+      const accountName = account.name || preview.currency;
+      failedAccounts.push(accountName);
+      debug.warn(`Failed to fetch existing activities for ${accountName}: ${getErrorMessage(e)}`);
     }
   }
 
-  return allExisting;
+  return {
+    activities: allExisting,
+    failedAccounts,
+    complete: failedAccounts.length === 0,
+  };
 }
 
 /**
@@ -128,8 +192,8 @@ export function deduplicateActivities(
   const { unique, duplicates } = filterDuplicateActivities(activities, existingActivities);
 
   if (duplicates.length > 0) {
-    console.log(`[Dedup] Removed ${duplicates.length} duplicate activities`);
-    console.log(
+    debug.log(`[Dedup] Removed ${duplicates.length} duplicate activities`);
+    debug.log(
       `[Dedup] By type:`,
       duplicates.reduce<Record<string, number>>(
         (acc, d) => {
@@ -154,11 +218,20 @@ export function groupActivitiesByCurrency(
   const grouped = new Map<string, ActivityImport[]>();
 
   for (const activity of activities) {
-    const currency = activity.currency || "USD";
-    if (!grouped.has(currency)) {
-      grouped.set(currency, []);
+    // Skip activities without currency - don't silently default
+    if (!activity.currency) {
+      debug.warn(
+        `Skipping activity without currency: ${activity.symbol || "unknown"} on ${activity.date || "unknown date"}`
+      );
+      continue;
     }
-    grouped.get(currency)!.push(activity);
+    const currency = activity.currency;
+    const existing = grouped.get(currency);
+    if (existing) {
+      existing.push(activity);
+    } else {
+      grouped.set(currency, [activity]);
+    }
   }
 
   return grouped;
@@ -179,16 +252,16 @@ export function createTransactionGroups(
       transactions,
       summary: {
         trades: transactions.filter(
-          (t) => t.activityType?.includes("BUY") || t.activityType?.includes("SELL")
+          (t) => t.activityType === "BUY" || t.activityType === "SELL"
         ).length,
-        dividends: transactions.filter((t) => t.activityType?.includes("DIVIDEND")).length,
+        dividends: transactions.filter((t) => t.activityType === "DIVIDEND").length,
         deposits: transactions.filter(
           (t) => t.activityType === "DEPOSIT" || t.activityType === "TRANSFER_IN"
         ).length,
         withdrawals: transactions.filter(
           (t) => t.activityType === "WITHDRAWAL" || t.activityType === "TRANSFER_OUT"
         ).length,
-        fees: transactions.filter((t) => t.activityType?.includes("FEE")).length,
+        fees: transactions.filter((t) => t.activityType === "FEE" || t.activityType === "TAX").length,
         other: transactions.filter(
           (t) => !t.activityType || (t.activityType as string) === "UNKNOWN"
         ).length,

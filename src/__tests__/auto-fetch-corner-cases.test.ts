@@ -125,8 +125,8 @@ class MockActivitiesAPI {
 class MockHttpClient {
   responses: { url: string; response: any }[] = [];
   defaultResponse = { ok: true, status: 200, status_text: 'OK', headers: {}, body: '' };
-  
-  async fetch(url: string, options?: any) {
+
+  async fetch(url: string, _options?: any) {
     const match = this.responses.find(r => url.includes(r.url));
     if (match) {
       return match.response;
@@ -171,31 +171,47 @@ class MockHttpClient {
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-const SAMPLE_CSV = `"ClientAccountID","CurrencyPrimary","AssetClass","Symbol","Description","DateTime","TradeDate","Quantity","TradePrice","TradeMoney","Proceeds","IBCommission","NetCash","Open/CloseIndicator","Notes/Codes","CostBasis","RealizedPnL","MTMInBaseCurrency","TransactionType","TransactionID","SecurityID","SecurityIDType","ISIN","ListingExchange","UnderlyingConID","UnderlyingSymbol","UnderlyingSecurityID","UnderlyingListingExchange"
+// Sample CSV data for testing - kept for documentation purposes
+// (unused but useful for future integration tests)
+const _SAMPLE_CSV = `"ClientAccountID","CurrencyPrimary","AssetClass","Symbol","Description","DateTime","TradeDate","Quantity","TradePrice","TradeMoney","Proceeds","IBCommission","NetCash","Open/CloseIndicator","Notes/Codes","CostBasis","RealizedPnL","MTMInBaseCurrency","TransactionType","TransactionID","SecurityID","SecurityIDType","ISIN","ListingExchange","UnderlyingConID","UnderlyingSymbol","UnderlyingSecurityID","UnderlyingListingExchange"
 "U123456","USD","STK","AAPL","APPLE INC","2024-01-15;10:30:00","2024-01-15","10","185.50","1855.00","-1855.00","-1.00","-1856.00","O","","1856.00","0.00","0.00","ExchTrade","12345","","","US0378331005","NASDAQ","","","",""`;
 
-const SAMPLE_CSV_MULTI_CURRENCY = `"ClientAccountID","CurrencyPrimary","AssetClass","Symbol","Description","DateTime","TradeDate","Quantity","TradePrice","TradeMoney"
+const _SAMPLE_CSV_MULTI_CURRENCY = `"ClientAccountID","CurrencyPrimary","AssetClass","Symbol","Description","DateTime","TradeDate","Quantity","TradePrice","TradeMoney"
 "U123456","USD","STK","AAPL","APPLE INC","2024-01-15;10:30:00","2024-01-15","10","185.50","1855.00"
 "U123456","EUR","STK","SAP","SAP SE","2024-01-15;11:00:00","2024-01-15","5","150.00","750.00"`;
+
+// Re-export for documentation (prevents unused variable warnings)
+void _SAMPLE_CSV;
+void _SAMPLE_CSV_MULTI_CURRENCY;
 
 // ========================================
 // TESTS
 // ========================================
+
+// Config type for tests (matches FlexQueryConfig with optional status fields)
+interface TestConfig {
+  id: string;
+  name: string;
+  queryId: string;
+  accountGroup: string;
+  autoFetchEnabled: boolean;
+  lastFetchTime?: string;
+  lastFetchStatus?: 'success' | 'error';
+  lastFetchError?: string;
+}
 
 describe('Auto-Fetch Corner Cases', () => {
   let secrets: MockSecretsStore;
   let logger: MockLogger;
   let accounts: MockAccountsAPI;
   let activities: MockActivitiesAPI;
-  let http: MockHttpClient;
   let fetchInProgress: boolean;
-  
+
   beforeEach(() => {
     secrets = new MockSecretsStore();
     logger = new MockLogger();
     accounts = new MockAccountsAPI();
     activities = new MockActivitiesAPI();
-    http = new MockHttpClient();
     fetchInProgress = false;
   });
   
@@ -308,7 +324,7 @@ describe('Auto-Fetch Corner Cases', () => {
     });
     
     it('should process config when no previous fetch exists', async () => {
-      const config = {
+      const config: TestConfig = {
         id: '1',
         name: 'Never Fetched',
         queryId: '123',
@@ -316,7 +332,7 @@ describe('Auto-Fetch Corner Cases', () => {
         autoFetchEnabled: true
         // No lastFetchTime
       };
-      
+
       expect(config.lastFetchTime).toBeUndefined();
       // Should proceed without cooldown check
     });
@@ -348,25 +364,25 @@ describe('Auto-Fetch Corner Cases', () => {
   
   describe('Fetch Error Handling', () => {
     it('should record error for invalid token (1015)', async () => {
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
-      
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
       // Simulate error 1015
       const errorMsg = 'Token is invalid';
-      
+
       config.lastFetchTime = new Date().toISOString();
       config.lastFetchStatus = 'error';
       config.lastFetchError = errorMsg;
-      
+
       expect(config.lastFetchStatus).toBe('error');
       expect(config.lastFetchError).toBe('Token is invalid');
     });
-    
+
     it('should record error for expired token (1012)', async () => {
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
-      
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
       config.lastFetchStatus = 'error';
       config.lastFetchError = 'Token has expired';
-      
+
       expect(config.lastFetchError).toBe('Token has expired');
     });
     
@@ -383,31 +399,31 @@ describe('Auto-Fetch Corner Cases', () => {
     });
     
     it('should record network errors', async () => {
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
-      
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
       const networkError = 'Network error: Connection refused';
       config.lastFetchStatus = 'error';
       config.lastFetchError = networkError;
-      
+
       expect(config.lastFetchError).toContain('Network error');
     });
-    
+
     it('should handle HTTP non-200 responses', async () => {
       const httpError = 'HTTP error: 503 Service Unavailable';
-      
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
       config.lastFetchStatus = 'error';
       config.lastFetchError = httpError;
-      
+
       expect(config.lastFetchError).toContain('HTTP error');
     });
-    
+
     it('should handle timeout waiting for statement', async () => {
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
-      
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
       config.lastFetchStatus = 'error';
       config.lastFetchError = 'Timeout waiting for statement generation';
-      
+
       expect(config.lastFetchError).toContain('Timeout');
     });
   });
@@ -444,13 +460,13 @@ describe('Auto-Fetch Corner Cases', () => {
     });
     
     it('should update status as success for empty results', async () => {
-      const config = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
-      
+      const config: TestConfig = { id: '1', name: 'Test', queryId: '123', accountGroup: 'IBKR', autoFetchEnabled: true };
+
       // Empty result = success status
       config.lastFetchTime = new Date().toISOString();
       config.lastFetchStatus = 'success';
       config.lastFetchError = undefined;
-      
+
       expect(config.lastFetchStatus).toBe('success');
       expect(config.lastFetchError).toBeUndefined();
     });

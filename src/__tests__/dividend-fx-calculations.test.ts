@@ -176,7 +176,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [buyRow, dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -203,7 +203,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [buyRow, dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -229,7 +229,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [fxRow, dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -250,7 +250,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -271,7 +271,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -305,7 +305,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [buyRow, fxRow, taxRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const tax = activities.find((a) => a.activityType === 'TAX');
       expect(tax).toBeDefined();
@@ -330,7 +330,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [fxRow, taxRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const tax = activities.find((a) => a.activityType === 'TAX');
       expect(tax).toBeDefined();
@@ -359,7 +359,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [fxRow1, fxRow2, fxRow3, dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -379,7 +379,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();
@@ -413,7 +413,7 @@ describe('Dividend FX Calculations', () => {
       );
 
       const rows: ProcessedIBKRRow[] = [buy1, sell1, buy2, dividendRow];
-      const activities = await convertToActivityImports(rows, accountPreviews);
+      const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       const dividend = activities.find((a) => a.activityType === 'DIVIDEND');
       expect(dividend).toBeDefined();

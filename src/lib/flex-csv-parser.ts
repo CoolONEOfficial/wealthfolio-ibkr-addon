@@ -12,6 +12,7 @@
 import Papa, { ParseResult } from "papaparse";
 import { CsvRowData } from "../presets/types";
 import { extractTradesSection, isMultiSectionIBKR } from "./ibkr-csv-splitter";
+import { validateCsvHeaders } from "./shared-utils";
 
 /**
  * Parsed Flex Query result
@@ -21,13 +22,6 @@ export interface ParsedFlexQuery {
   headers: string[];
   errors: string[];
   rowCount: number;
-}
-
-/**
- * Validation function for headers
- */
-function validateHeaders(headers: string[]): boolean {
-  return headers.length >= 3 && !headers.some((header) => !header || header.trim() === "");
 }
 
 /**
@@ -72,7 +66,7 @@ export function parseFlexQueryCSV(csvContent: string): ParsedFlexQuery {
     headers = rawCsvLines[0].map((h: string) => h.trim());
 
     // Validate headers
-    if (!validateHeaders(headers)) {
+    if (!validateCsvHeaders(headers)) {
       errors.push("Invalid CSV headers. Expected at least 3 non-empty columns.");
       return { rows, headers, errors, rowCount: 0 };
     }

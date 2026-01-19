@@ -1,7 +1,10 @@
 import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
+import { debug } from "./debug-logger";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
-import type { AccountPreview, ProcessedIBKRRow } from "../types";
+import type { AccountPreview, ProcessedIBKRRow, ConversionError, ConversionResult } from "../types";
 import { parseDividendInfo } from "./dividend-utils";
+import { getErrorMessage } from "./shared-utils";
+import { MAX_FX_RATE } from "./constants";
 
 /**
  * Valid activity types that can be imported to Wealthfolio
@@ -48,14 +51,23 @@ function mapActivityType(ibkrType: string): ActivityType | null {
 
 /**
  * Parse numeric value from CSV string
+ * Returns 0 for empty/null/undefined values, and the parsed number otherwise.
+ * Non-empty values that cannot be parsed are logged as warnings.
  */
-function parseNumeric(value: string | number | undefined | null): number {
+function parseNumeric(value: string | number | undefined | null, fieldName?: string): number {
   if (typeof value === "number") return value;
-  if (!value) return 0;
+  if (!value || String(value).trim() === "") return 0;
 
   const str = String(value).replace(/[^0-9.-]/g, "");
   const parsed = parseFloat(str);
-  return isNaN(parsed) ? 0 : parsed;
+
+  if (isNaN(parsed)) {
+    // Log warning for non-empty values that can't be parsed
+    debug.warn(`[Activity Converter] Could not parse numeric value${fieldName ? ` for ${fieldName}` : ""}: "${value}"`);
+    return 0;
+  }
+
+  return parsed;
 }
 
 /**
@@ -176,8 +188,8 @@ export function buildFXRateLookup(rawData: ProcessedIBKRRow[]): Map<string, FXRa
     const [base, quote] = parts;
     const tradePrice = parseNumeric(row.TradePrice);
 
-    // Skip invalid prices
-    if (tradePrice <= 0 || tradePrice > 1000) continue;
+    // Skip invalid prices (sanity check for FX rates)
+    if (tradePrice <= 0 || tradePrice > MAX_FX_RATE) continue;
 
     const date = row.TradeDate || row.ReportDate || row.Date || "";
     if (!date) continue;
@@ -334,12 +346,37 @@ function determineTransactionCurrency(row: ProcessedIBKRRow, baseCurrency: strin
 
 /**
  * Convert IBKR CSV rows to ActivityImport format
+ *
+ * Returns a result object with:
+ * - activities: Successfully converted activities
+ * - errors: Conversion errors with details for user visibility
+ * - skipped: Count of rows skipped due to unrecognized types
  */
 export async function convertToActivityImports(
   processedData: ProcessedIBKRRow[],
   accountPreviews: AccountPreview[]
-): Promise<ActivityImport[]> {
+): Promise<ConversionResult> {
+  // Input validation - early return for empty inputs
+  if (!processedData || processedData.length === 0) {
+    return { activities: [], errors: [], skipped: 0 };
+  }
+
+  if (!accountPreviews || accountPreviews.length === 0) {
+    return {
+      activities: [],
+      errors: [{
+        rowIndex: 0,
+        identifier: "Account Setup",
+        message: "No account previews provided - cannot convert activities without target accounts",
+        rowData: {},
+      }],
+      skipped: processedData.length,
+    };
+  }
+
   const activities: ActivityImport[] = [];
+  const errors: ConversionError[] = [];
+  let skipped = 0;
 
   // Build FX rate lookup from FX trades for currency conversion
   const fxLookup = buildFXRateLookup(processedData);
@@ -347,7 +384,10 @@ export async function convertToActivityImports(
   // Build position history from BUY/SELL trades for dividend calculation
   const positionHistory = buildPositionHistory(processedData);
 
-  for (const row of processedData) {
+  for (let rowIndex = 0; rowIndex < processedData.length; rowIndex++) {
+    const row = processedData[rowIndex];
+    const identifier = row.Symbol || row.ActivityDescription || `Row ${rowIndex + 1}`;
+
     try {
       const baseCurrency = row.CurrencyPrimary || "USD";
       const ibkrType = row._IBKR_TYPE || "";
@@ -356,7 +396,8 @@ export async function convertToActivityImports(
       // Skip unrecognized activity types
       if (activityType === null) {
         if (ibkrType && ibkrType !== "") {
-          console.warn(`Skipping unrecognized IBKR activity type: ${ibkrType} for ${row.Symbol || row.ActivityDescription || "unknown"}`);
+          debug.log(`Skipping unrecognized IBKR activity type: ${ibkrType} for ${identifier}`);
+          skipped++;
         }
         continue;
       }
@@ -422,8 +463,17 @@ export async function convertToActivityImports(
                 // Last resort: use TradeMoney as-is and fall back to base currency
                 // This is better than having incorrect currency on the amount
                 amount = Math.abs(parseNumeric(row.TradeMoney));
+                const originalCurrency = currency;
                 currency = baseCurrency;
-                console.warn(`No FX rate or position for ${baseCurrency}/${dividendInfo.currency} dividend: ${symbol} on ${txDate}, using base currency amount`);
+                const warningMsg = `Dividend currency mismatch: ${symbol} on ${txDate} - no FX rate or position for ${baseCurrency}/${dividendInfo.currency}, using base currency (${baseCurrency}) instead of ${originalCurrency}`;
+                debug.warn(warningMsg);
+                // Surface this as a non-fatal error so user is aware of currency change
+                errors.push({
+                  rowIndex,
+                  identifier,
+                  message: warningMsg,
+                  rowData: row as Record<string, unknown>,
+                });
               }
             }
           }
@@ -468,7 +518,13 @@ export async function convertToActivityImports(
                 // Estimate what the base currency dividend would have been
                 const estimatedBaseDividend = grossDividend / fxRate;
                 // Calculate tax rate from ratio
-                const taxRate = estimatedBaseDividend > 0 ? tradeMoneyBase / estimatedBaseDividend : 0;
+                let taxRate: number;
+                if (estimatedBaseDividend > 0) {
+                  taxRate = tradeMoneyBase / estimatedBaseDividend;
+                } else {
+                  taxRate = 0;
+                  debug.warn(`Zero estimated dividend for tax calculation: ${symbol} on ${txDate}, tax rate defaulted to 0`);
+                }
                 // Apply tax rate to actual dividend amount
                 amount = grossDividend * taxRate;
               } else {
@@ -479,7 +535,7 @@ export async function convertToActivityImports(
                   // Fall back to base currency when no FX rate available
                   amount = tradeMoneyBase;
                   currency = baseCurrency;
-                  console.warn(`No FX rate or position for ${baseCurrency}/${dividendInfo.currency} tax: ${symbol} on ${txDate}, using base currency amount`);
+                  debug.warn(`No FX rate or position for ${baseCurrency}/${dividendInfo.currency} tax: ${symbol} on ${txDate}, using base currency amount`);
                 }
               }
             } else {
@@ -530,7 +586,7 @@ export async function convertToActivityImports(
             // Fallback: use TradeMoney as-is in base currency
             amount = tradeMoneyBase;
             currency = baseCurrency;
-            console.warn(`No FX rate for ${baseCurrency}/${targetCurrency} OFEE fee on ${txDate}, using base currency amount`);
+            debug.warn(`No FX rate for ${baseCurrency}/${targetCurrency} OFEE fee on ${txDate}, using base currency amount`);
           }
         } else {
           amount = Math.abs(parseNumeric(row.TradeMoney));
@@ -541,7 +597,11 @@ export async function convertToActivityImports(
       const accountPreview = accountPreviews.find(p => p.currency === currency);
 
       if (!accountPreview) {
-        console.warn(`No account found for currency ${currency}, skipping transaction for ${row.Symbol || row.ActivityDescription}`);
+        errors.push({
+          rowIndex,
+          identifier,
+          message: `No account found for currency ${currency}`,
+        });
         continue;
       }
 
@@ -551,9 +611,21 @@ export async function convertToActivityImports(
       const finalQuantity = isCashTransaction ? amount : quantity;
       const finalUnitPrice = isCashTransaction ? 1 : unitPrice;
 
+      // Validate date - missing date should be an error, not silently defaulted
+      const activityDate = row.Date || row.ReportDate;
+      if (!activityDate) {
+        errors.push({
+          rowIndex,
+          identifier,
+          message: "Missing date field - transaction cannot be imported without a valid date",
+          rowData: row as Record<string, unknown>,
+        });
+        continue;
+      }
+
       const activity: ActivityImport = {
         accountId: "", // Will be set later when grouping by currency
-        date: row.Date || row.ReportDate || new Date().toISOString().split("T")[0],
+        date: activityDate,
         symbol: row._resolvedTicker || row.Symbol || row.SecurityID || `$CASH-${currency}`,
         activityType: activityType,
         quantity: finalQuantity,
@@ -568,9 +640,21 @@ export async function convertToActivityImports(
 
       activities.push(activity);
     } catch (error) {
-      console.error("Error converting activity:", error, row);
+      const errorMessage = getErrorMessage(error);
+      debug.error(`Error converting activity at row ${rowIndex}:`, errorMessage);
+      errors.push({
+        rowIndex,
+        identifier,
+        message: errorMessage,
+        rowData: { ...row },
+      });
     }
   }
 
-  return activities;
+  // Log summary for debugging
+  if (errors.length > 0) {
+    debug.warn(`Activity conversion completed with ${errors.length} error(s), ${skipped} skipped, ${activities.length} successful`);
+  }
+
+  return { activities, errors, skipped };
 }

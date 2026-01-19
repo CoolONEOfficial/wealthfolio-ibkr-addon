@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   FlexQueryConfig,
-  loadConfigs,
+  loadConfigsSafe,
   addConfig,
   updateConfig,
   deleteConfig,
@@ -34,7 +34,14 @@ const QUERY_KEYS = {
 export function useFlexConfigs(secrets: SecretsAPI | undefined) {
   return useQuery({
     queryKey: QUERY_KEYS.configs,
-    queryFn: () => (secrets ? loadConfigs(secrets) : Promise.resolve([])),
+    queryFn: async () => {
+      if (!secrets) return [];
+      const result = await loadConfigsSafe(secrets);
+      if (!result.success) {
+        throw new Error(result.error || "Failed to load configurations");
+      }
+      return result.configs ?? [];
+    },
     enabled: !!secrets,
   });
 }

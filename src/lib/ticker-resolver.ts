@@ -10,7 +10,10 @@
  * NO hardcoded exchange suffixes - all resolution is ISIN-based via Yahoo Finance API
  */
 
-import { API_REQUEST_TIMEOUT_MS } from "./constants";
+import { API_REQUEST_TIMEOUT_MS, TICKER_CACHE_MAX_ENTRIES, TICKER_CACHE_MAX_AGE_MS } from "./constants";
+import { getErrorMessage } from "./shared-utils";
+import type { TickerSearchResult } from "../types";
+import { debug } from "./debug-logger";
 
 export interface TickerResolutionRequest {
   isin: string;
@@ -45,6 +48,20 @@ const YAHOO_FINANCE_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/cha
 const LOCALSTORAGE_CACHE_KEY = "ibkr_ticker_cache";
 
 /**
+ * Validate that a parsed object is a valid TickerCacheEntry
+ */
+function isValidCacheEntry(entry: unknown): entry is TickerCacheEntry {
+  if (!entry || typeof entry !== "object") return false;
+  const e = entry as Record<string, unknown>;
+  return (
+    typeof e.yahooTicker === "string" &&
+    typeof e.confidence === "string" &&
+    typeof e.timestamp === "string"
+    // name is optional, so we don't require it
+  );
+}
+
+/**
  * Tier 1: Check local cache (uses localStorage in web mode)
  */
 async function checkLocalCache(
@@ -57,9 +74,9 @@ async function checkLocalCache(
   try {
     const cacheContent = localStorage.getItem(LOCALSTORAGE_CACHE_KEY);
     if (cacheContent) {
-      const cache: Record<string, TickerCacheEntry> = JSON.parse(cacheContent);
-      if (cache[cacheKey]) {
-        const entry = cache[cacheKey];
+      const cache = JSON.parse(cacheContent) as Record<string, unknown>;
+      const entry = cache[cacheKey];
+      if (isValidCacheEntry(entry)) {
         return {
           yahooTicker: entry.yahooTicker,
           confidence: entry.confidence as "high" | "medium" | "low" | "failed",
@@ -69,11 +86,51 @@ async function checkLocalCache(
       }
     }
   } catch (error) {
-    // Cache errors are non-fatal but should be logged for debugging
-    console.warn(`[Ticker Resolver] Cache read error for ${isin}:${exchange}:`, error instanceof Error ? error.message : String(error));
+    // Cache corruption handling: This executes when JSON.parse() fails due to:
+    // - Manually corrupted localStorage
+    // - Browser storage encoding issues
+    // - Incomplete writes from browser crashes
+    // While rare in normal operation, this ensures graceful recovery.
+    debug.warn(`[Ticker Resolver] Cache corrupted, clearing:`, getErrorMessage(error));
+    try {
+      localStorage.removeItem(LOCALSTORAGE_CACHE_KEY);
+    } catch (clearError) {
+      debug.warn(`[Ticker Resolver] Failed to clear corrupted cache:`, getErrorMessage(clearError));
+    }
   }
 
   return null;
+}
+
+/**
+ * Prune the cache to remove expired entries and enforce size limits
+ * @param cache - The cache object to prune
+ * @returns The pruned cache object
+ */
+function pruneCache(cache: Record<string, TickerCacheEntry>): Record<string, TickerCacheEntry> {
+  const now = Date.now();
+  const entries = Object.entries(cache);
+
+  // Remove expired entries (older than TICKER_CACHE_MAX_AGE_MS)
+  const validEntries = entries.filter(([, entry]) => {
+    const entryTime = new Date(entry.timestamp).getTime();
+    return !isNaN(entryTime) && now - entryTime < TICKER_CACHE_MAX_AGE_MS;
+  });
+
+  // If still over the size limit, remove oldest entries
+  if (validEntries.length > TICKER_CACHE_MAX_ENTRIES) {
+    // Sort by timestamp (oldest first) and keep only the newest entries
+    validEntries.sort((a, b) => {
+      const timeA = new Date(a[1].timestamp).getTime();
+      const timeB = new Date(b[1].timestamp).getTime();
+      return timeA - timeB;
+    });
+    const prunedEntries = validEntries.slice(validEntries.length - TICKER_CACHE_MAX_ENTRIES);
+    debug.log(`[Ticker Resolver] Pruned cache from ${validEntries.length} to ${prunedEntries.length} entries`);
+    return Object.fromEntries(prunedEntries);
+  }
+
+  return Object.fromEntries(validEntries);
 }
 
 /**
@@ -104,52 +161,52 @@ async function saveToLocalCache(
       cache = JSON.parse(cacheContent);
     }
     cache[cacheKey] = entry;
+
+    // Prune cache to prevent unbounded growth
+    cache = pruneCache(cache);
+
     localStorage.setItem(LOCALSTORAGE_CACHE_KEY, JSON.stringify(cache));
   } catch (error) {
     // Cache errors are non-fatal but should be logged for debugging
-    console.warn(`[Ticker Resolver] Cache write error for ${isin}:${exchange}:`, error instanceof Error ? error.message : String(error));
+    debug.warn(`[Ticker Resolver] Cache write error for ${isin}:${exchange}:`, getErrorMessage(error));
   }
 }
 
-// Global reference to search function (set via setSearchFunction)
-let globalSearchTicker: ((query: string) => Promise<any[]>) | null = null;
-
-/**
- * Set the search ticker function from addon context
- * This should be called at addon initialization
- */
-export function setSearchFunction(searchFn: (query: string) => Promise<any[]>): void {
-  globalSearchTicker = searchFn;
-}
+// Type for search function
+export type SearchTickerFn = (query: string) => Promise<TickerSearchResult[]>;
 
 /**
  * Tier 2: Try Wealthfolio search API (searches via Rust backend, bypasses CORS)
  * Enhanced with CUSIP, FIGI, and description searches
+ * @param request - The ticker resolution request
+ * @param searchFn - Search function to use (required for this tier)
  */
-async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<TickerResolutionResult | null> {
+async function searchWealthfolioAPI(
+  request: TickerResolutionRequest,
+  searchFn?: SearchTickerFn | null
+): Promise<TickerResolutionResult | null> {
   const { isin, symbol, cusip, figi, description } = request;
-  console.log(`[Ticker Resolver] Wealthfolio API search: ISIN=${isin}, symbol=${symbol}, CUSIP=${cusip || 'N/A'}, FIGI=${figi || 'N/A'}`);
+  debug.log(`[Ticker Resolver] Wealthfolio API search: ISIN=${isin}, symbol=${symbol}, CUSIP=${cusip || 'N/A'}, FIGI=${figi || 'N/A'}`);
 
-  // Use the global search function set via setSearchFunction
-  const searchTicker = globalSearchTicker;
-
-  if (!searchTicker) {
-    console.warn('[Ticker Resolver] No search function available - call setSearchFunction first');
+  if (!searchFn) {
+    debug.warn('[Ticker Resolver] No search function available - pass searchFn to resolveTicker() options');
     return null;
   }
 
-  let results: any[] = [];
+  const searchTicker = searchFn;
+
+  let results: TickerSearchResult[] = [];
 
   // Try searching by ISIN first
   if (isin) {
     try {
       results = await searchTicker(isin);
-      console.log(`[Ticker Resolver] Wealthfolio ISIN search found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Wealthfolio ISIN search found ${results.length} results`);
 
       if (results.length > 0) {
         // Log all results for debugging
         results.forEach((r, idx) => {
-          console.log(`[Ticker Resolver] Result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange}, score: ${r.score})`);
+          debug.log(`[Ticker Resolver] Result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange}, score: ${r.score})`);
         });
 
         // If multiple results, try to match by exchange name or prefer suffixed symbols for non-US exchanges
@@ -164,7 +221,7 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
             const suffixedResult = results.find(r => r.symbol.includes('.'));
             if (suffixedResult) {
               result = suffixedResult;
-              console.log(`[Ticker Resolver] Selected suffixed ticker for non-US exchange: ${result.symbol}`);
+              debug.log(`[Ticker Resolver] Selected suffixed ticker for non-US exchange: ${result.symbol}`);
             }
           }
 
@@ -177,7 +234,7 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
 
           if (exchangeMatchResult) {
             result = exchangeMatchResult;
-            console.log(`[Ticker Resolver] Matched by exchange name: ${result.symbol} (${result.exchange})`);
+            debug.log(`[Ticker Resolver] Matched by exchange name: ${result.symbol} (${result.exchange})`);
           }
         }
 
@@ -189,16 +246,17 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (isinError) {
-      console.log(`[Ticker Resolver] ISIN search returned no results or error`);
+      // Distinguish between actual errors and no results for debugging
+      debug.warn(`[Ticker Resolver] ISIN search error for ${isin}:`, isinError);
     }
   }
 
   // Try searching by CUSIP (US securities)
   if (cusip) {
-    console.log(`[Ticker Resolver] Trying Wealthfolio search with CUSIP: ${cusip}`);
+    debug.log(`[Ticker Resolver] Trying Wealthfolio search with CUSIP: ${cusip}`);
     try {
       results = await searchTicker(cusip);
-      console.log(`[Ticker Resolver] Wealthfolio CUSIP search found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Wealthfolio CUSIP search found ${results.length} results`);
       if (results.length > 0) {
         const result = results[0];
         return {
@@ -209,16 +267,16 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (cusipError) {
-      console.log(`[Ticker Resolver] CUSIP search for ${cusip} returned no results or error`);
+      debug.warn(`[Ticker Resolver] CUSIP search error for ${cusip}:`, cusipError);
     }
   }
 
   // Try searching by FIGI (Bloomberg identifier)
   if (figi) {
-    console.log(`[Ticker Resolver] Trying Wealthfolio search with FIGI: ${figi}`);
+    debug.log(`[Ticker Resolver] Trying Wealthfolio search with FIGI: ${figi}`);
     try {
       results = await searchTicker(figi);
-      console.log(`[Ticker Resolver] Wealthfolio FIGI search found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Wealthfolio FIGI search found ${results.length} results`);
       if (results.length > 0) {
         const result = results[0];
         return {
@@ -229,21 +287,21 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (figiError) {
-      console.log(`[Ticker Resolver] FIGI search for ${figi} returned no results or error`);
+      debug.warn(`[Ticker Resolver] FIGI search error for ${figi}:`, figiError);
     }
   }
 
   // Try searching by symbol (more precise than description)
   if (symbol) {
-    console.log(`[Ticker Resolver] Trying Wealthfolio search with symbol: ${symbol}`);
+    debug.log(`[Ticker Resolver] Trying Wealthfolio search with symbol: ${symbol}`);
     try {
       results = await searchTicker(symbol);
-      console.log(`[Ticker Resolver] Wealthfolio symbol search found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Wealthfolio symbol search found ${results.length} results`);
 
       if (results.length > 0) {
         // Log all results for debugging
         results.forEach((r, idx) => {
-          console.log(`[Ticker Resolver] Symbol result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange || 'N/A'}, score: ${r.score})`);
+          debug.log(`[Ticker Resolver] Symbol result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange || 'N/A'}, score: ${r.score})`);
         });
 
         // If multiple results, prefer suffixed symbols for non-US exchanges
@@ -257,7 +315,7 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
             const suffixedResult = results.find(r => r.symbol.includes('.'));
             if (suffixedResult) {
               result = suffixedResult;
-              console.log(`[Ticker Resolver] Selected suffixed ticker for non-US exchange ${request.exchange}: ${result.symbol}`);
+              debug.log(`[Ticker Resolver] Selected suffixed ticker for non-US exchange ${request.exchange}: ${result.symbol}`);
             }
           }
 
@@ -270,7 +328,7 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
 
           if (exchangeMatchResult) {
             result = exchangeMatchResult;
-            console.log(`[Ticker Resolver] Matched by exchange name: ${result.symbol} (${result.exchange})`);
+            debug.log(`[Ticker Resolver] Matched by exchange name: ${result.symbol} (${result.exchange})`);
           }
         }
 
@@ -282,14 +340,14 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (symbolError) {
-      console.log(`[Ticker Resolver] Symbol search for ${symbol} returned no results or error`);
+      debug.warn(`[Ticker Resolver] Symbol search error for ${symbol}:`, symbolError);
     }
 
     // If still no results, try with .L suffix for London stocks (common for IBKR ETFs)
-    console.log(`[Ticker Resolver] Trying with .L suffix: ${symbol}.L`);
+    debug.log(`[Ticker Resolver] Trying with .L suffix: ${symbol}.L`);
     try {
       results = await searchTicker(`${symbol}.L`);
-      console.log(`[Ticker Resolver] Search for ${symbol}.L found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Search for ${symbol}.L found ${results.length} results`);
       if (results.length > 0) {
         const result = results[0];
         return {
@@ -300,17 +358,17 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (suffixError) {
-      console.log(`[Ticker Resolver] .L suffix search returned no results or error`);
+      debug.warn(`[Ticker Resolver] .L suffix search error for ${symbol}:`, suffixError);
     }
   }
 
   // Try searching by description (company/fund name) - LAST RESORT only
   // Description can match multiple securities with similar names, so use as fallback only
   if (description) {
-    console.log(`[Ticker Resolver] Trying Wealthfolio search with description: ${description}`);
+    debug.log(`[Ticker Resolver] Trying Wealthfolio search with description: ${description}`);
     try {
       results = await searchTicker(description);
-      console.log(`[Ticker Resolver] Wealthfolio description search found ${results.length} results`);
+      debug.log(`[Ticker Resolver] Wealthfolio description search found ${results.length} results`);
       if (results.length > 0) {
         const result = results[0];
         return {
@@ -321,11 +379,11 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
         };
       }
     } catch (descError) {
-      console.log(`[Ticker Resolver] Description search returned no results or error`);
+      debug.warn(`[Ticker Resolver] Description search error:`, descError);
     }
   }
 
-  console.log(`[Ticker Resolver] No results found for ISIN ${isin}, CUSIP ${cusip}, FIGI ${figi}, or symbol ${symbol}`);
+  debug.log(`[Ticker Resolver] No results found for ISIN ${isin}, CUSIP ${cusip}, FIGI ${figi}, or symbol ${symbol}`);
   return null;
 }
 
@@ -333,12 +391,16 @@ async function searchWealthfolioAPI(request: TickerResolutionRequest): Promise<T
  * Validate that a ticker exists on Yahoo Finance
  */
 async function validateYahooTicker(ticker: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+
   try {
     const url = `${YAHOO_FINANCE_CHART_URL}/${encodeURIComponent(ticker)}`;
     const response = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       },
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -346,13 +408,19 @@ async function validateYahooTicker(ticker: string): Promise<boolean> {
     }
 
     const data = await response.json();
-    const error = data?.chart?.error;
-
-    // If no error field, ticker is valid
-    return !error;
+    // Ticker is valid if there's no error field in the response
+    // (data?.chart?.error is undefined when ticker exists)
+    return !data?.chart?.error;
   } catch (error) {
-    console.warn(`Failed to validate ticker ${ticker}:`, error);
+    // Distinguish timeout errors from other errors for better debugging
+    if (error instanceof Error && error.name === "AbortError") {
+      debug.warn(`Ticker validation timed out for ${ticker} (>${API_REQUEST_TIMEOUT_MS}ms)`);
+    } else {
+      debug.warn(`Failed to validate ticker ${ticker}:`, error);
+    }
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -363,20 +431,20 @@ async function searchYahooFinanceByISIN(
   isin: string,
 ): Promise<TickerResolutionResult | null> {
   if (!isin) {
-    console.log('[Ticker Resolver] ISIN search: no ISIN provided');
+    debug.log('[Ticker Resolver] ISIN search: no ISIN provided');
     return null;
   }
 
+  // Set up timeout with proper cleanup in finally block
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+
   try {
     const url = `${YAHOO_FINANCE_SEARCH_URL}?q=${encodeURIComponent(isin)}`;
-    console.log(`[Ticker Resolver] Searching ISIN: ${isin}`);
-    console.log(`[Ticker Resolver] Fetch URL: ${url}`);
+    debug.log(`[Ticker Resolver] Searching ISIN: ${isin}`);
+    debug.log(`[Ticker Resolver] Fetch URL: ${url}`);
 
-    console.log(`[Ticker Resolver] Starting fetch for ${isin}...`);
-
-    // Add timeout to fetch
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+    debug.log(`[Ticker Resolver] Starting fetch for ${isin}...`);
 
     const response = await fetch(url, {
       headers: {
@@ -385,30 +453,30 @@ async function searchYahooFinanceByISIN(
       signal: controller.signal,
       mode: 'cors',
     });
-    clearTimeout(timeoutId);
-    console.log(`[Ticker Resolver] Fetch completed for ${isin}`);
+    debug.log(`[Ticker Resolver] Fetch completed for ${isin}`);
 
-    console.log(`[Ticker Resolver] ISIN ${isin} response status: ${response.status}`);
+    debug.log(`[Ticker Resolver] ISIN ${isin} response status: ${response.status}`);
 
     if (!response.ok) {
-      console.warn(`[Ticker Resolver] ISIN ${isin} search failed: HTTP ${response.status}`);
+      debug.warn(`[Ticker Resolver] ISIN ${isin} search failed: HTTP ${response.status}`);
       return null;
     }
 
     const data = await response.json();
-    const quotes = data.quotes || [];
+    // Validate that quotes is an array before using it
+    const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
 
-    console.log(`[Ticker Resolver] ISIN ${isin} found ${quotes.length} quotes`);
+    debug.log(`[Ticker Resolver] ISIN ${isin} found ${quotes.length} quotes`);
 
     if (quotes.length > 0) {
       const quote = quotes[0];
       const ticker = quote.symbol;
-      console.log(`[Ticker Resolver] ISIN ${isin} → ${ticker}, validating...`);
+      debug.log(`[Ticker Resolver] ISIN ${isin} → ${ticker}, validating...`);
 
       // Validate the ticker to ensure it's accessible
       const isValid = await validateYahooTicker(ticker);
 
-      console.log(`[Ticker Resolver] Ticker ${ticker} validation: ${isValid ? 'VALID' : 'INVALID'}`);
+      debug.log(`[Ticker Resolver] Ticker ${ticker} validation: ${isValid ? 'VALID' : 'INVALID'}`);
 
       if (isValid) {
         return {
@@ -420,11 +488,13 @@ async function searchYahooFinanceByISIN(
       }
     }
   } catch (error) {
-    console.warn(`[Ticker Resolver] ERROR - Failed to search ISIN ${isin}:`, error);
-    console.warn(`[Ticker Resolver] Error type: ${error instanceof Error ? error.message : String(error)}`);
+    debug.warn(`[Ticker Resolver] ERROR - Failed to search ISIN ${isin}:`, error);
+    debug.warn(`[Ticker Resolver] Error type: ${getErrorMessage(error)}`);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  console.log(`[Ticker Resolver] ISIN ${isin} resolution failed, returning null`);
+  debug.log(`[Ticker Resolver] ISIN ${isin} resolution failed, returning null`);
   return null;
 }
 
@@ -445,26 +515,38 @@ function createFallbackTicker(symbol: string): TickerResolutionResult {
 }
 
 /**
+ * Options for ticker resolution
+ */
+export interface TickerResolutionOptions {
+  /** Search function to use (preferred over global state) */
+  searchFn?: SearchTickerFn | null;
+}
+
+/**
  * Main ticker resolution function
  * Attempts all tiers in order until a resolution is found
+ * @param request - The ticker resolution request
+ * @param options - Optional configuration including searchFn to avoid global state
  */
 export async function resolveTicker(
   request: TickerResolutionRequest,
+  options?: TickerResolutionOptions,
 ): Promise<TickerResolutionResult> {
   const { isin, symbol, exchange } = request;
+  const searchFn = options?.searchFn;
 
   // Tier 1: Local cache
   const cached = await checkLocalCache(isin, exchange);
   if (cached) {
-    console.log(`[Ticker Resolver] Cache hit: ${isin} → ${cached.yahooTicker}`);
+    debug.log(`[Ticker Resolver] Cache hit: ${isin} → ${cached.yahooTicker}`);
     return cached;
   }
 
   // Tier 2: Wealthfolio search API (uses Rust backend, bypasses CORS)
   // Now passes full request with CUSIP, FIGI, description
-  const wealthfolioResult = await searchWealthfolioAPI(request);
+  const wealthfolioResult = await searchWealthfolioAPI(request, searchFn);
   if (wealthfolioResult) {
-    console.log(`[Ticker Resolver] Wealthfolio API: ${isin} → ${wealthfolioResult.yahooTicker}`);
+    debug.log(`[Ticker Resolver] Wealthfolio API: ${isin} → ${wealthfolioResult.yahooTicker}`);
     await saveToLocalCache(isin, exchange, wealthfolioResult);
     return wealthfolioResult;
   }
@@ -472,7 +554,7 @@ export async function resolveTicker(
   // Tier 3: Yahoo Finance ISIN search
   const yahooResult = await searchYahooFinanceByISIN(isin);
   if (yahooResult) {
-    console.log(`[Ticker Resolver] Yahoo Finance ISIN search: ${isin} → ${yahooResult.yahooTicker}`);
+    debug.log(`[Ticker Resolver] Yahoo Finance ISIN search: ${isin} → ${yahooResult.yahooTicker}`);
     await saveToLocalCache(isin, exchange, yahooResult);
     return yahooResult;
   }
@@ -480,7 +562,7 @@ export async function resolveTicker(
   // Tier 4: Manual selection is handled by the UI component
   // For now, return minimal fallback with low confidence
 
-  console.log(`[Ticker Resolver] Fallback: ${symbol} (ISIN search failed, needs manual resolution)`);
+  debug.log(`[Ticker Resolver] Fallback: ${symbol} (ISIN search failed, needs manual resolution)`);
   const fallback = createFallbackTicker(symbol);
   return fallback;
 }
@@ -490,7 +572,7 @@ export async function resolveTicker(
  * Extracts ISIN, Symbol, CUSIP, FIGI, Description, and ListingExchange
  */
 export function extractTickersToResolve(
-  data: Record<string, any>[],
+  data: Record<string, string | undefined>[],
 ): TickerResolutionRequest[] {
   const tickerMap = new Map<string, TickerResolutionRequest>();
 

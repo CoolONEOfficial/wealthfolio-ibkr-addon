@@ -3,8 +3,10 @@ import {
   isConfigInCooldown,
   createActivityFingerprintGetter,
   createSuccessStatus,
+  createPendingStatus,
   createErrorStatus,
   formatImportResultMessage,
+  enrichIBKRErrorMessage,
 } from "../lib/auto-fetch-helpers";
 import { FETCH_COOLDOWN_MS } from "../lib/constants";
 
@@ -312,6 +314,39 @@ describe("Auto-Fetch Helpers", () => {
     });
   });
 
+  describe("createPendingStatus", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("should create pending status with current timestamp", () => {
+      const now = new Date("2024-01-15T12:00:00Z");
+      vi.setSystemTime(now);
+
+      const status = createPendingStatus();
+
+      expect(status.lastFetchTime).toBe("2024-01-15T12:00:00.000Z");
+      // Note: Uses "success" since "pending" isn't a valid status type
+      expect(status.lastFetchStatus).toBe("success");
+      expect(status.lastFetchError).toBeUndefined();
+    });
+
+    it("should claim config before actual fetch to prevent race conditions", () => {
+      const now = new Date("2024-01-15T12:00:00Z");
+      vi.setSystemTime(now);
+
+      const pendingStatus = createPendingStatus();
+
+      // Pending status puts config in cooldown immediately
+      const cooldownCheck = isConfigInCooldown(pendingStatus.lastFetchTime);
+      expect(cooldownCheck.inCooldown).toBe(true);
+    });
+  });
+
   describe("createErrorStatus", () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -406,6 +441,81 @@ describe("Auto-Fetch Helpers", () => {
     it("should handle single skip", () => {
       const message = formatImportResultMessage(5, 1);
       expect(message).toBe("5 transactions imported, 1 duplicates skipped");
+    });
+
+    it("should include failed count when provided", () => {
+      const message = formatImportResultMessage(10, 5, 3);
+      expect(message).toBe("10 transactions imported, 5 duplicates skipped, 3 failed");
+    });
+
+    it("should include failed count with zero skipped", () => {
+      const message = formatImportResultMessage(10, 0, 3);
+      expect(message).toBe("10 transactions imported, 3 failed");
+    });
+
+    it("should show only failed when no imports or skipped", () => {
+      const message = formatImportResultMessage(0, 0, 5);
+      expect(message).toBe("0 transactions imported, 5 failed");
+    });
+
+    it("should handle single failure", () => {
+      const message = formatImportResultMessage(5, 2, 1);
+      expect(message).toBe("5 transactions imported, 2 duplicates skipped, 1 failed");
+    });
+
+    it("should not include failed when zero (default)", () => {
+      const message = formatImportResultMessage(10, 5, 0);
+      expect(message).toBe("10 transactions imported, 5 duplicates skipped");
+    });
+  });
+
+  describe("enrichIBKRErrorMessage", () => {
+    it("should enrich 'Token has expired' with actionable guidance", () => {
+      const result = enrichIBKRErrorMessage("Token has expired");
+      expect(result).toContain("Token has expired");
+      expect(result).toContain("IBKR Account Management");
+      expect(result).toContain("Flex Token");
+    });
+
+    it("should enrich 'Token is invalid' with actionable guidance", () => {
+      const result = enrichIBKRErrorMessage("Token is invalid");
+      expect(result).toContain("Token is invalid");
+      expect(result).toContain("IBKR Account Management");
+    });
+
+    it("should enrich IP restriction errors", () => {
+      const result = enrichIBKRErrorMessage("IP address restriction violated");
+      expect(result).toContain("IP address not allowed");
+      expect(result).toContain("IP restrictions");
+    });
+
+    it("should enrich 'Query is invalid' with actionable guidance", () => {
+      const result = enrichIBKRErrorMessage("Query is invalid");
+      expect(result).toContain("Query ID is invalid");
+      expect(result).toContain("IBKR Account Management");
+    });
+
+    it("should enrich permission errors", () => {
+      const result = enrichIBKRErrorMessage("Token missing permissions");
+      expect(result).toContain("permissions");
+      expect(result).toContain("IBKR Account Management");
+    });
+
+    it("should handle partial matches (wrapped errors)", () => {
+      const result = enrichIBKRErrorMessage("Error: Token has expired during fetch");
+      expect(result).toContain("Generate a new token");
+    });
+
+    it("should return original message for unknown errors", () => {
+      const unknownError = "Some random network error";
+      const result = enrichIBKRErrorMessage(unknownError);
+      expect(result).toBe(unknownError);
+    });
+
+    it("should return original message for generic errors", () => {
+      const genericError = "Connection refused";
+      const result = enrichIBKRErrorMessage(genericError);
+      expect(result).toBe(genericError);
     });
   });
 });

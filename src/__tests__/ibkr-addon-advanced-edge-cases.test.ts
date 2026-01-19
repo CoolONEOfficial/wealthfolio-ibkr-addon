@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { splitFXConversions } from '../lib/fx-transaction-splitter';
-import { extractTickersToResolve, resolveTicker, setSearchFunction } from '../lib/ticker-resolver';
+import { extractTickersToResolve, resolveTicker } from '../lib/ticker-resolver';
 import { preprocessIBKRData } from '../lib/ibkr-preprocessor';
 import { convertToActivityImports } from '../lib/activity-converter';
 import { parseFlexQueryCSV } from '../lib/flex-csv-parser';
@@ -83,11 +83,11 @@ describe('FX Splitter Currency Validation', () => {
 
         const result = splitFXConversions(transactions, accounts);
 
-        expect(result).toHaveLength(2);
-        expect(result[0].activityType).toBe('WITHDRAWAL');
-        expect(result[0].currency).toBe(source);
-        expect(result[1].activityType).toBe('DEPOSIT');
-        expect(result[1].currency).toBe(target);
+        expect(result.transactions).toHaveLength(2);
+        expect(result.transactions[0].activityType).toBe('WITHDRAWAL');
+        expect(result.transactions[0].currency).toBe(source);
+        expect(result.transactions[1].activityType).toBe('DEPOSIT');
+        expect(result.transactions[1].currency).toBe(target);
       });
     });
   });
@@ -116,7 +116,7 @@ describe('FX Splitter Currency Validation', () => {
 
       const result = splitFXConversions(transactions, accounts);
       // lowercase doesn't match the pattern, should pass through
-      expect(result).toHaveLength(1);
+      expect(result.transactions).toHaveLength(1);
     });
 
     it('should NOT split 4-letter currency codes', () => {
@@ -137,7 +137,7 @@ describe('FX Splitter Currency Validation', () => {
 
       const accounts = new Map([['USD', createMockAccount('USD')]]);
       const result = splitFXConversions(transactions, accounts);
-      expect(result).toHaveLength(1);
+      expect(result.transactions).toHaveLength(1);
     });
 
     it('should NOT split 2-letter currency codes', () => {
@@ -158,7 +158,7 @@ describe('FX Splitter Currency Validation', () => {
 
       const accounts = new Map([['USD', createMockAccount('USD')]]);
       const result = splitFXConversions(transactions, accounts);
-      expect(result).toHaveLength(1);
+      expect(result.transactions).toHaveLength(1);
     });
   });
 
@@ -186,9 +186,9 @@ describe('FX Splitter Currency Validation', () => {
 
       const result = splitFXConversions(transactions, accounts);
       // Should still split but with zero amounts
-      expect(result).toHaveLength(2);
-      expect(result[0].amount).toBe(0);
-      expect(result[1].amount).toBe(0);
+      expect(result.transactions).toHaveLength(2);
+      expect(result.transactions[0].amount).toBe(0);
+      expect(result.transactions[1].amount).toBe(0);
     });
 
     it('should handle zero unit price FX conversion', () => {
@@ -213,9 +213,9 @@ describe('FX Splitter Currency Validation', () => {
       ]);
 
       const result = splitFXConversions(transactions, accounts);
-      expect(result).toHaveLength(2);
+      expect(result.transactions).toHaveLength(2);
       // Should use fallback amount
-      expect(result[1].amount).toBe(1250);
+      expect(result.transactions[1].amount).toBe(1250);
     });
   });
 });
@@ -311,8 +311,6 @@ describe('Ticker Resolver Edge Cases', () => {
 
   describe('resolveTicker with search function', () => {
     beforeEach(() => {
-      // Reset search function to empty results
-      setSearchFunction(async () => []);
       // Clear localStorage cache
       try {
         localStorage.removeItem('ibkr_ticker_cache');
@@ -323,14 +321,17 @@ describe('Ticker Resolver Edge Cases', () => {
 
     it('should return fallback when search returns no results', async () => {
       // Search function returns empty array
-      setSearchFunction(async () => []);
+      const emptySearchFn = async () => [];
 
-      const result = await resolveTicker({
-        isin: 'UNKNOWN123456789',
-        symbol: 'UNKNOWN',
-        exchange: 'UNKNOWN',
-        currency: 'USD',
-      });
+      const result = await resolveTicker(
+        {
+          isin: 'UNKNOWN123456789',
+          symbol: 'UNKNOWN',
+          exchange: 'UNKNOWN',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
 
       expect(result.confidence).toBe('low');
       expect(result.source).toBe('fallback');
@@ -340,14 +341,16 @@ describe('Ticker Resolver Edge Cases', () => {
       const mockSearchFn = vi.fn().mockResolvedValue([
         { symbol: 'AAPL', name: 'Apple Inc', exchange: 'NASDAQ' },
       ]);
-      setSearchFunction(mockSearchFn);
 
-      const result = await resolveTicker({
-        isin: 'US0378331005',
-        symbol: 'AAPL',
-        exchange: 'NASDAQ',
-        currency: 'USD',
-      });
+      const result = await resolveTicker(
+        {
+          isin: 'US0378331005',
+          symbol: 'AAPL',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
 
       expect(result.yahooTicker).toBe('AAPL');
       expect(result.confidence).toBe('high');
@@ -358,16 +361,397 @@ describe('Ticker Resolver Edge Cases', () => {
         { symbol: 'VOD', name: 'Vodafone', exchange: 'NYSE' },
         { symbol: 'VOD.L', name: 'Vodafone', exchange: 'LSE' },
       ]);
-      setSearchFunction(mockSearchFn);
 
-      const result = await resolveTicker({
-        isin: 'GB00BH4HKS39',
-        symbol: 'VOD',
-        exchange: 'LSE',
-        currency: 'GBP',
-      });
+      const result = await resolveTicker(
+        {
+          isin: 'GB00BH4HKS39',
+          symbol: 'VOD',
+          exchange: 'LSE',
+          currency: 'GBP',
+        },
+        { searchFn: mockSearchFn }
+      );
 
       expect(result.yahooTicker).toBe('VOD.L');
+    });
+  });
+
+  describe('cache corruption recovery', () => {
+    let originalLocalStorage: Storage;
+    let mockStorage: Record<string, string>;
+
+    beforeEach(() => {
+      originalLocalStorage = globalThis.localStorage;
+      mockStorage = {};
+
+      // Mock localStorage
+      const storageMock: Storage = {
+        getItem: vi.fn((key: string) => mockStorage[key] || null),
+        setItem: vi.fn((key: string, value: string) => { mockStorage[key] = value; }),
+        removeItem: vi.fn((key: string) => { delete mockStorage[key]; }),
+        clear: vi.fn(() => { mockStorage = {}; }),
+        length: 0,
+        key: vi.fn(() => null),
+      };
+
+      Object.defineProperty(globalThis, 'localStorage', {
+        value: storageMock,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(globalThis, 'localStorage', {
+        value: originalLocalStorage,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    it('should handle corrupted cache JSON gracefully', async () => {
+      // Set corrupted JSON in cache
+      mockStorage['ibkr_ticker_cache'] = '{ invalid json }}}';
+
+      const mockSearchFn = vi.fn().mockResolvedValue([
+        { symbol: 'AAPL', name: 'Apple Inc', exchange: 'NASDAQ' },
+      ]);
+
+      // Should not throw, should fall through to search
+      const result = await resolveTicker(
+        {
+          isin: 'US0378331005',
+          symbol: 'AAPL',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
+
+      expect(result.yahooTicker).toBe('AAPL');
+      expect(result.confidence).toBe('high');
+      // Cache should have been cleared and repopulated with new valid entry
+      const cache = JSON.parse(mockStorage['ibkr_ticker_cache']);
+      expect(cache['US0378331005:NASDAQ']).toBeDefined();
+      expect(cache['US0378331005:NASDAQ'].yahooTicker).toBe('AAPL');
+    });
+
+    it('should handle completely empty cache string', async () => {
+      mockStorage['ibkr_ticker_cache'] = '';
+
+      const mockSearchFn = vi.fn().mockResolvedValue([
+        { symbol: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' },
+      ]);
+
+      const result = await resolveTicker(
+        {
+          isin: 'US5949181045',
+          symbol: 'MSFT',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
+
+      expect(result.yahooTicker).toBe('MSFT');
+    });
+
+    it('should handle cache with invalid entry structure', async () => {
+      // Cache has an entry but with invalid structure (missing required fields)
+      mockStorage['ibkr_ticker_cache'] = JSON.stringify({
+        'US0378331005:NASDAQ': { invalid: 'structure' },
+      });
+
+      const mockSearchFn = vi.fn().mockResolvedValue([
+        { symbol: 'AAPL', name: 'Apple Inc', exchange: 'NASDAQ' },
+      ]);
+
+      const result = await resolveTicker(
+        {
+          isin: 'US0378331005',
+          symbol: 'AAPL',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
+
+      // Should skip invalid cache entry and use search
+      expect(result.yahooTicker).toBe('AAPL');
+      expect(mockSearchFn).toHaveBeenCalled();
+    });
+
+    it('should return cached result when cache is valid', async () => {
+      // Set valid cache
+      mockStorage['ibkr_ticker_cache'] = JSON.stringify({
+        'US0378331005:NASDAQ': {
+          yahooTicker: 'AAPL',
+          confidence: 'high',
+          name: 'Apple Inc',
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      const mockSearchFn = vi.fn();
+
+      const result = await resolveTicker(
+        {
+          isin: 'US0378331005',
+          symbol: 'AAPL',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
+
+      expect(result.yahooTicker).toBe('AAPL');
+      expect(result.source).toBe('cache');
+      // Search should NOT have been called (cache hit)
+      expect(mockSearchFn).not.toHaveBeenCalled();
+    });
+
+    it('should save new resolution to cache', async () => {
+      const mockSearchFn = vi.fn().mockResolvedValue([
+        { symbol: 'GOOGL', name: 'Alphabet Inc', exchange: 'NASDAQ' },
+      ]);
+
+      await resolveTicker(
+        {
+          isin: 'US02079K3059',
+          symbol: 'GOOGL',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: mockSearchFn }
+      );
+
+      // Verify cache was written
+      expect(mockStorage['ibkr_ticker_cache']).toBeDefined();
+      const cache = JSON.parse(mockStorage['ibkr_ticker_cache']);
+      expect(cache['US02079K3059:NASDAQ']).toBeDefined();
+      expect(cache['US02079K3059:NASDAQ'].yahooTicker).toBe('GOOGL');
+    });
+  });
+
+  describe('Yahoo Finance API fallback', () => {
+    let originalFetch: typeof global.fetch;
+    let mockStorage: Record<string, string>;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+      mockStorage = {};
+
+      // Mock localStorage
+      const storageMock: Storage = {
+        getItem: vi.fn((key: string) => mockStorage[key] || null),
+        setItem: vi.fn((key: string, value: string) => { mockStorage[key] = value; }),
+        removeItem: vi.fn((key: string) => { delete mockStorage[key]; }),
+        clear: vi.fn(() => { mockStorage = {}; }),
+        length: 0,
+        key: vi.fn(() => null),
+      };
+
+      Object.defineProperty(globalThis, 'localStorage', {
+        value: storageMock,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('should fall back to Yahoo Finance when Wealthfolio search returns nothing', async () => {
+      // Mock fetch for Yahoo Finance search and validation
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            quotes: [{ symbol: 'TEST.L', longname: 'Test Stock', shortname: 'Test' }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ chart: { result: [{}] } }), // No error = valid ticker
+        });
+
+      // Empty search function - forces fallback to Yahoo Finance
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'GB0000000001',
+          symbol: 'TEST',
+          exchange: 'LSE',
+          currency: 'GBP',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.yahooTicker).toBe('TEST.L');
+      expect(result.confidence).toBe('high');
+      expect(result.source).toBe('yfinance');
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    it('should return fallback when Yahoo Finance search fails', async () => {
+      // Mock fetch to return error
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      });
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'INVALID123456',
+          symbol: 'INVALID',
+          exchange: 'UNKNOWN',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should return fallback when Yahoo Finance returns no quotes', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ quotes: [] }),
+      });
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'XX0000000000',
+          symbol: 'NOQUOTES',
+          exchange: 'NYSE',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should return fallback when ticker validation fails', async () => {
+      // Search succeeds but validation fails
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            quotes: [{ symbol: 'INVALID', longname: 'Invalid Stock' }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ chart: { error: { code: 'Not Found' } } }),
+        });
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'US0000000000',
+          symbol: 'INVALID',
+          exchange: 'NYSE',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should handle fetch network error gracefully', async () => {
+      global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'GB1234567890',
+          symbol: 'NETERR',
+          exchange: 'LSE',
+          currency: 'GBP',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should handle fetch timeout (AbortError) gracefully', async () => {
+      const abortError = new Error('Aborted');
+      abortError.name = 'AbortError';
+      global.fetch = vi.fn().mockRejectedValue(abortError);
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'US9999999999',
+          symbol: 'TIMEOUT',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should handle malformed JSON response', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => { throw new Error('Invalid JSON'); },
+      });
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: 'FR0000000001',
+          symbol: 'BADJSON',
+          exchange: 'SBF',
+          currency: 'EUR',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+    });
+
+    it('should skip Yahoo Finance search when no ISIN provided', async () => {
+      // Should go directly to fallback without calling Yahoo Finance
+      global.fetch = vi.fn();
+
+      const emptySearchFn = async () => [];
+
+      const result = await resolveTicker(
+        {
+          isin: '', // Empty ISIN
+          symbol: 'NOISIN',
+          exchange: 'NYSE',
+          currency: 'USD',
+        },
+        { searchFn: emptySearchFn }
+      );
+
+      expect(result.confidence).toBe('low');
+      expect(result.source).toBe('fallback');
+      // Yahoo search should not be called for empty ISIN
+      // (Wealthfolio search may still be called)
     });
   });
 });
@@ -641,7 +1025,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities).toHaveLength(1);
       expect(activities[0].amount).toBe(6); // Should use parsed amount, not TradeMoney
@@ -658,7 +1042,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities).toHaveLength(1);
       expect(activities[0].amount).toBe(4.5);
@@ -675,7 +1059,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].amount).toBe(1.5);
     });
@@ -695,7 +1079,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].fee).toBe(68); // 18 + 50
     });
@@ -712,7 +1096,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].fee).toBe(1.5);
     });
@@ -730,7 +1114,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].currency).toBe('USD');
     });
@@ -746,7 +1130,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].currency).toBe('GBP');
     });
@@ -762,7 +1146,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].currency).toBe('EUR');
     });
@@ -777,7 +1161,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].quantity).toBe(5000);
       expect(activities[0].unitPrice).toBe(1);
@@ -792,7 +1176,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].quantity).toBe(3000);
       expect(activities[0].unitPrice).toBe(1);
@@ -807,7 +1191,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].quantity).toBe(25);
       expect(activities[0].unitPrice).toBe(1);
@@ -827,7 +1211,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].symbol).toBe('VOD.L');
     });
@@ -843,7 +1227,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].symbol).toBe('AAPL');
     });
@@ -856,7 +1240,7 @@ describe('Activity Converter Advanced Edge Cases', () => {
         Date: '2024-01-15',
       }];
 
-      const activities = await convertToActivityImports(rows, mockAccountPreviews);
+      const { activities } = await convertToActivityImports(rows, mockAccountPreviews);
 
       expect(activities[0].symbol).toBe('$CASH-USD');
     });

@@ -5,13 +5,16 @@
  * Uses multiple strategies: ISIN lookup, symbol mapping, exchange suffix addition
  */
 
+import { debug } from "./debug-logger";
+import { isCashSymbol } from "./shared-utils";
 import {
   resolveTicker,
   extractTickersToResolve,
-  setSearchFunction,
   type TickerResolutionResult,
+  type SearchTickerFn,
 } from "./ticker-resolver";
 import { TICKER_RESOLUTION_DELAY_MS } from "./constants";
+import type { ProcessedIBKRRow } from "../types";
 
 export interface TickerResolution {
   originalSymbol: string;
@@ -113,25 +116,24 @@ function addExchangeSuffix(symbol: string, exchange: string): string {
  * @param searchFn - Search function from addon context (ctx.api.marketData.searchTicker)
  */
 export async function resolveTickersFromIBKR(
-  data: any[],
+  data: ProcessedIBKRRow[],
   onProgress?: (current: number, total: number) => void,
-  searchFn?: (query: string) => Promise<any[]>
-): Promise<any[]> {
+  searchFn?: SearchTickerFn
+): Promise<ProcessedIBKRRow[]> {
   const resolved = [...data];
 
-  // Set up the search function for the ticker resolver
+  // Log search function availability (no longer using global state)
   if (searchFn) {
-    setSearchFunction(searchFn);
-    console.log("[Ticker Resolution] Search function configured");
+    debug.log("[Ticker Resolution] Search function provided - full resolution enabled");
   } else {
-    console.warn("[Ticker Resolution] No search function provided - resolution may be limited");
+    debug.warn("[Ticker Resolution] No search function provided - resolution may be limited");
   }
 
   // Extract unique tickers that need resolution
   const tickersToResolve = extractTickersToResolve(data);
   const total = tickersToResolve.length;
 
-  console.log(`[Ticker Resolution] Found ${total} unique tickers to resolve`);
+  debug.log(`[Ticker Resolution] Found ${total} unique tickers to resolve`);
 
   // Create a map for fast lookup: isin:exchange -> resolved ticker
   const resolutionMap = new Map<string, TickerResolutionResult>();
@@ -146,12 +148,13 @@ export async function resolveTickersFromIBKR(
       onProgress(i + 1, total);
     }
 
-    console.log(
+    debug.log(
       `[Ticker Resolution] Resolving ${i + 1}/${total}: ${request.symbol} (ISIN: ${request.isin}, Exchange: ${request.exchange})`
     );
 
     try {
-      let result = await resolveTicker(request);
+      // Pass searchFn directly to avoid global state race conditions
+      let result = await resolveTicker(request, { searchFn });
 
       // If resolution failed or has low confidence, try adding exchange suffix
       if (
@@ -161,7 +164,7 @@ export async function resolveTickersFromIBKR(
       ) {
         const suffixedSymbol = addExchangeSuffix(request.symbol, request.exchange);
         if (suffixedSymbol !== request.symbol) {
-          console.log(
+          debug.log(
             `[Ticker Resolution] Adding exchange suffix: ${request.symbol} -> ${suffixedSymbol}`
           );
           result = {
@@ -175,11 +178,11 @@ export async function resolveTickersFromIBKR(
 
       resolutionMap.set(key, result);
 
-      console.log(
+      debug.log(
         `[Ticker Resolution] ${request.symbol} -> ${result.yahooTicker} (confidence: ${result.confidence})`
       );
     } catch (error) {
-      console.error(`[Ticker Resolution] Error resolving ${request.symbol}:`, error);
+      debug.error(`[Ticker Resolution] Error resolving ${request.symbol}:`, error);
       // Use fallback with exchange suffix
       const suffixedSymbol = addExchangeSuffix(request.symbol, request.exchange);
       resolutionMap.set(key, {
@@ -198,7 +201,7 @@ export async function resolveTickersFromIBKR(
     const row = resolved[i];
 
     // Skip cash transactions
-    if (row.Symbol && row.Symbol.startsWith("$CASH-")) {
+    if (isCashSymbol(row.Symbol)) {
       resolved[i]._resolvedTicker = row.Symbol;
       resolved[i]._tickerConfidence = "high";
       continue;

@@ -8,6 +8,8 @@
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
 import { MAX_DEBUG_LOGS } from "./constants";
 import { extractDividendPerShare } from "./dividend-utils";
+import { formatDateToISO } from "./shared-utils";
+import { debug } from "./debug-logger";
 
 /**
  * Normalize a numeric value for fingerprinting
@@ -72,6 +74,67 @@ const DIVIDEND_ACTIVITY_TYPES = new Set(["DIVIDEND"]);
 const COMMENT_IN_FINGERPRINT_TYPES = new Set(["FEE"]);
 
 /**
+ * Normalized activity fields for fingerprint creation
+ * This interface provides a common structure for both new and existing activities
+ */
+interface NormalizedActivityFields {
+  date: string | Date | undefined;
+  symbol: string;
+  activityType: string;
+  quantity?: number;
+  unitPrice?: number;
+  amount?: number;
+  fee?: number;
+  currency?: string;
+  comment?: string;
+}
+
+/**
+ * Internal function to create a fingerprint from normalized fields
+ * This is the single source of truth for fingerprint logic, avoiding duplication
+ */
+function createFingerprintFromNormalized(fields: NormalizedActivityFields): string {
+  const activityType = normalizeString(fields.activityType);
+  const isTrade = TRADE_ACTIVITY_TYPES.has(activityType);
+  const isDividend = DIVIDEND_ACTIVITY_TYPES.has(activityType);
+
+  const parts = [
+    normalizeDate(fields.date),
+    normalizeString(fields.symbol),
+    activityType,
+  ];
+
+  if (isTrade) {
+    // For trades: use quantity and unitPrice (reliably stored)
+    parts.push(normalizeNumber(fields.quantity));
+    parts.push(normalizeNumber(fields.unitPrice));
+  } else if (isDividend) {
+    // For dividends: use per-share rate from comment (consistent across sources)
+    // This avoids issues where position-based amount calculation differs
+    const perShare = extractDividendPerShare(fields.comment);
+    if (perShare !== null) {
+      parts.push(normalizeNumber(perShare));
+    } else {
+      // Fallback to amount if per-share rate not found
+      parts.push(normalizeNumber(fields.amount));
+    }
+  } else {
+    // For other cash transactions: use amount only (quantity/unitPrice are stored as 0)
+    parts.push(normalizeNumber(fields.amount));
+    // For FEE activities, include comment to distinguish multiple fees on same day
+    // (e.g., multiple FX commissions for different trades on the same day)
+    if (COMMENT_IN_FINGERPRINT_TYPES.has(activityType)) {
+      parts.push(normalizeString(fields.comment));
+    }
+  }
+
+  parts.push(normalizeNumber(fields.fee));
+  parts.push(normalizeString(fields.currency));
+
+  return parts.join("|");
+}
+
+/**
  * Create a fingerprint for an activity that uniquely identifies it
  *
  * For trade activities (BUY/SELL):
@@ -89,44 +152,17 @@ const COMMENT_IN_FINGERPRINT_TYPES = new Set(["FEE"]);
  * (Flex Query API vs CSV) will have the same fingerprint.
  */
 export function createActivityFingerprint(activity: ActivityImport): string {
-  const activityType = normalizeString(activity.activityType);
-  const isTrade = TRADE_ACTIVITY_TYPES.has(activityType);
-  const isDividend = DIVIDEND_ACTIVITY_TYPES.has(activityType);
-
-  const parts = [
-    normalizeDate(activity.date),
-    normalizeString(activity.symbol),
-    activityType,
-  ];
-
-  if (isTrade) {
-    // For trades: use quantity and unitPrice (reliably stored)
-    parts.push(normalizeNumber(activity.quantity));
-    parts.push(normalizeNumber(activity.unitPrice));
-  } else if (isDividend) {
-    // For dividends: use per-share rate from comment (consistent across sources)
-    // This avoids issues where position-based amount calculation differs
-    const perShare = extractDividendPerShare(activity.comment);
-    if (perShare !== null) {
-      parts.push(normalizeNumber(perShare));
-    } else {
-      // Fallback to amount if per-share rate not found
-      parts.push(normalizeNumber(activity.amount));
-    }
-  } else {
-    // For other cash transactions: use amount only
-    parts.push(normalizeNumber(activity.amount));
-    // For FEE activities, include comment to distinguish multiple fees on same day
-    // (e.g., multiple FX commissions for different trades on the same day)
-    if (COMMENT_IN_FINGERPRINT_TYPES.has(activityType)) {
-      parts.push(normalizeString(activity.comment));
-    }
-  }
-
-  parts.push(normalizeNumber(activity.fee));
-  parts.push(normalizeString(activity.currency));
-
-  return parts.join("|");
+  return createFingerprintFromNormalized({
+    date: activity.date,
+    symbol: activity.symbol,
+    activityType: activity.activityType,
+    quantity: activity.quantity,
+    unitPrice: activity.unitPrice,
+    amount: activity.amount,
+    fee: activity.fee,
+    currency: activity.currency,
+    comment: activity.comment,
+  });
 }
 
 /**
@@ -144,43 +180,17 @@ export function createExistingActivityFingerprint(activity: {
   currency: string;
   comment?: string;
 }): string {
-  const activityType = normalizeString(activity.activityType);
-  const isTrade = TRADE_ACTIVITY_TYPES.has(activityType);
-  const isDividend = DIVIDEND_ACTIVITY_TYPES.has(activityType);
-
-  const parts = [
-    normalizeDate(activity.activityDate),
-    normalizeString(activity.assetId),
-    activityType,
-  ];
-
-  if (isTrade) {
-    // For trades: use quantity and unitPrice (reliably stored)
-    parts.push(normalizeNumber(activity.quantity));
-    parts.push(normalizeNumber(activity.unitPrice));
-  } else if (isDividend) {
-    // For dividends: use per-share rate from comment (consistent across sources)
-    const perShare = extractDividendPerShare(activity.comment);
-    if (perShare !== null) {
-      parts.push(normalizeNumber(perShare));
-    } else {
-      // Fallback to amount if per-share rate not found
-      parts.push(normalizeNumber(activity.amount));
-    }
-  } else {
-    // For other cash transactions: use amount only (quantity/unitPrice are stored as 0)
-    parts.push(normalizeNumber(activity.amount));
-    // For FEE activities, include comment to distinguish multiple fees on same day
-    // (e.g., multiple FX commissions for different trades on the same day)
-    if (COMMENT_IN_FINGERPRINT_TYPES.has(activityType)) {
-      parts.push(normalizeString(activity.comment));
-    }
-  }
-
-  parts.push(normalizeNumber(activity.fee));
-  parts.push(normalizeString(activity.currency));
-
-  return parts.join("|");
+  return createFingerprintFromNormalized({
+    date: activity.activityDate,
+    symbol: activity.assetId,
+    activityType: activity.activityType,
+    quantity: activity.quantity,
+    unitPrice: activity.unitPrice,
+    amount: activity.amount,
+    fee: activity.fee,
+    currency: activity.currency,
+    comment: activity.comment,
+  });
 }
 
 /**
@@ -206,52 +216,54 @@ export function filterDuplicateActivities(
 ): { unique: ActivityImport[]; duplicates: ActivityImport[] } {
   // Build set of existing fingerprints
   const existingFingerprints = new Set<string>();
-  const existingByDateSymbol = new Map<string, any[]>(); // For debugging
+  // For debugging: store both fingerprint and original activity for comparison
+  type DebugEntry = { activity: typeof existingActivities[0]; fingerprint: string };
+  const existingByDateSymbol = new Map<string, DebugEntry[]>();
 
   // Debug: Log summary of existing activities
-  console.log(`[Dedup] Comparing ${newActivities.length} new activities against ${existingActivities.length} existing activities`);
+  debug.log(`[Dedup] Comparing ${newActivities.length} new activities against ${existingActivities.length} existing activities`);
   if (existingActivities.length > 0) {
     const sample = existingActivities[0];
-    console.log(`[Dedup] Sample existing activity raw fields:`);
-    console.log(`  activityDate: ${sample.activityDate} (type: ${typeof sample.activityDate})`);
-    console.log(`  assetId: ${sample.assetId}`);
-    console.log(`  activityType: ${sample.activityType}`);
-    console.log(`  quantity: ${sample.quantity}`);
-    console.log(`  unitPrice: ${sample.unitPrice}`);
-    console.log(`  amount: ${sample.amount}`);
-    console.log(`  fee: ${sample.fee}`);
-    console.log(`  currency: ${sample.currency}`);
+    debug.log(`[Dedup] Sample existing activity raw fields:`);
+    debug.log(`  activityDate: ${sample.activityDate} (type: ${typeof sample.activityDate})`);
+    debug.log(`  assetId: ${sample.assetId}`);
+    debug.log(`  activityType: ${sample.activityType}`);
+    debug.log(`  quantity: ${sample.quantity}`);
+    debug.log(`  unitPrice: ${sample.unitPrice}`);
+    debug.log(`  amount: ${sample.amount}`);
+    debug.log(`  fee: ${sample.fee}`);
+    debug.log(`  currency: ${sample.currency}`);
   }
   if (newActivities.length > 0) {
     const sample = newActivities[0];
-    console.log(`[Dedup] Sample new activity raw fields:`);
-    console.log(`  date: ${sample.date} (type: ${typeof sample.date})`);
-    console.log(`  symbol: ${sample.symbol}`);
-    console.log(`  activityType: ${sample.activityType}`);
-    console.log(`  quantity: ${sample.quantity}`);
-    console.log(`  unitPrice: ${sample.unitPrice}`);
-    console.log(`  amount: ${sample.amount}`);
-    console.log(`  fee: ${sample.fee}`);
-    console.log(`  currency: ${sample.currency}`);
+    debug.log(`[Dedup] Sample new activity raw fields:`);
+    debug.log(`  date: ${sample.date} (type: ${typeof sample.date})`);
+    debug.log(`  symbol: ${sample.symbol}`);
+    debug.log(`  activityType: ${sample.activityType}`);
+    debug.log(`  quantity: ${sample.quantity}`);
+    debug.log(`  unitPrice: ${sample.unitPrice}`);
+    debug.log(`  amount: ${sample.amount}`);
+    debug.log(`  fee: ${sample.fee}`);
+    debug.log(`  currency: ${sample.currency}`);
   }
 
   for (const activity of existingActivities) {
     // Normalize activityDate to string before creating fingerprint
     const normalizedActivity = {
       ...activity,
-      activityDate: activity.activityDate instanceof Date
-        ? activity.activityDate.toISOString().split('T')[0]
-        : String(activity.activityDate),
+      activityDate: formatDateToISO(activity.activityDate),
     };
     const fingerprint = createExistingActivityFingerprint(normalizedActivity);
     existingFingerprints.add(fingerprint);
 
     // Track by date+symbol for debugging
     const key = `${normalizeDate(activity.activityDate)}|${normalizeString(activity.assetId)}`;
-    if (!existingByDateSymbol.has(key)) {
-      existingByDateSymbol.set(key, []);
+    const existingEntries = existingByDateSymbol.get(key);
+    if (existingEntries) {
+      existingEntries.push({ activity, fingerprint });
+    } else {
+      existingByDateSymbol.set(key, [{ activity, fingerprint }]);
     }
-    existingByDateSymbol.get(key)!.push({ activity, fingerprint });
   }
 
   const unique: ActivityImport[] = [];
@@ -275,15 +287,15 @@ export function filterDuplicateActivities(
         const existingMatches = existingByDateSymbol.get(key);
         if (existingMatches && existingMatches.length > 0) {
           const existing = existingMatches[0].activity;
-          console.log(`[Dedup Debug] Activity NOT matched despite same date+symbol:`);
-          console.log(`  Date: new="${normalizeDate(activity.date)}" vs existing="${normalizeDate(existing.activityDate)}"`);
-          console.log(`  Symbol: new="${normalizeString(activity.symbol)}" vs existing="${normalizeString(existing.assetId)}"`);
-          console.log(`  Type: new="${normalizeString(activity.activityType)}" vs existing="${normalizeString(existing.activityType)}"`);
-          console.log(`  Qty: new="${normalizeNumber(activity.quantity)}" vs existing="${normalizeNumber(existing.quantity)}"`);
-          console.log(`  UnitPrice: new="${normalizeNumber(activity.unitPrice)}" vs existing="${normalizeNumber(existing.unitPrice)}"`);
-          console.log(`  Amount: new="${normalizeNumber(activity.amount)}" vs existing="${normalizeNumber(existing.amount)}"`);
-          console.log(`  Fee: new="${normalizeNumber(activity.fee)}" vs existing="${normalizeNumber(existing.fee)}"`);
-          console.log(`  Currency: new="${normalizeString(activity.currency)}" vs existing="${normalizeString(existing.currency)}"`);
+          debug.log(`[Dedup Debug] Activity NOT matched despite same date+symbol:`);
+          debug.log(`  Date: new="${normalizeDate(activity.date)}" vs existing="${normalizeDate(existing.activityDate)}"`);
+          debug.log(`  Symbol: new="${normalizeString(activity.symbol)}" vs existing="${normalizeString(existing.assetId)}"`);
+          debug.log(`  Type: new="${normalizeString(activity.activityType)}" vs existing="${normalizeString(existing.activityType)}"`);
+          debug.log(`  Qty: new="${normalizeNumber(activity.quantity)}" vs existing="${normalizeNumber(existing.quantity)}"`);
+          debug.log(`  UnitPrice: new="${normalizeNumber(activity.unitPrice)}" vs existing="${normalizeNumber(existing.unitPrice)}"`);
+          debug.log(`  Amount: new="${normalizeNumber(activity.amount)}" vs existing="${normalizeNumber(existing.amount)}"`);
+          debug.log(`  Fee: new="${normalizeNumber(activity.fee)}" vs existing="${normalizeNumber(existing.fee)}"`);
+          debug.log(`  Currency: new="${normalizeString(activity.currency)}" vs existing="${normalizeString(existing.currency)}"`);
           debugLogCount++;
         }
       }
@@ -333,7 +345,7 @@ export async function deduplicateActivities(
   const { unique, duplicates } = filterDuplicateActivities(newActivities, existingActivities);
 
   if (duplicates.length > 0) {
-    console.log(`[Deduplication] Skipping ${duplicates.length} duplicate activities for account ${accountId}`);
+    debug.log(`[Deduplication] Skipping ${duplicates.length} duplicate activities for account ${accountId}`);
   }
 
   return {

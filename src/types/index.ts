@@ -1,7 +1,21 @@
 /**
  * Shared type definitions for the IBKR Multi-Currency Import addon
  */
-import type { Account, ActivityImport } from '@wealthfolio/addon-sdk';
+import type { Account, ActivityImport, ActivityDetails } from '@wealthfolio/addon-sdk';
+
+// Re-export commonly used SDK types
+export type { ActivityDetails };
+
+/**
+ * Ticker search result from the Wealthfolio API
+ */
+export interface TickerSearchResult {
+  symbol: string;
+  name?: string;
+  exchange?: string;
+  score?: number;
+  [key: string]: unknown;
+}
 
 /**
  * Preview of an account to be created or reused during import
@@ -88,6 +102,32 @@ export interface ProgressInfo {
   current: number;
   total: number;
   message?: string;
+}
+
+/**
+ * Error that occurred during activity conversion
+ */
+export interface ConversionError {
+  /** Row index in the original data */
+  rowIndex: number;
+  /** Symbol or description of the failed row */
+  identifier: string;
+  /** Error message */
+  message: string;
+  /** The raw row data that failed */
+  rowData?: Record<string, unknown>;
+}
+
+/**
+ * Result of converting IBKR rows to activities
+ */
+export interface ConversionResult {
+  /** Successfully converted activities */
+  activities: import("@wealthfolio/addon-sdk").ActivityImport[];
+  /** Errors that occurred during conversion */
+  errors: ConversionError[];
+  /** Number of rows skipped (unrecognized type, no account, etc.) */
+  skipped: number;
 }
 
 /**

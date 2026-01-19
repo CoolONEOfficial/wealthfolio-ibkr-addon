@@ -1,32 +1,24 @@
 import React from 'react';
 import type { AddonContext, Account } from '@wealthfolio/addon-sdk';
 
-// Use the host app's toast function (exposed on window) to ensure toasts appear in the main Toaster
-const getToast = () => (window as unknown as { __wealthfolio_toast__?: typeof import('sonner').toast }).__wealthfolio_toast__;
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import IBKRMultiImportPage from './pages/ibkr-multi-import-page';
 import IBKRFlexSettingsPage from './pages/ibkr-flex-settings-page';
-import { fetchFlexQuery, setHttpClient } from './lib/flex-query-fetcher';
-import { parseFlexQueryCSV } from './lib/flex-csv-parser';
+import { setHttpClient } from './lib/flex-query-fetcher';
 import {
-  loadConfigs,
+  loadConfigsSafe,
   loadToken,
   updateConfigStatus,
 } from './lib/flex-config-storage';
-import { detectCurrenciesFromIBKR } from './lib/currency-detector';
 import { generateAccountNames } from './lib/account-name-generator';
-import { preprocessIBKRData } from './lib/ibkr-preprocessor';
-import { convertToActivityImports } from './lib/activity-converter';
-import { deduplicateActivities } from './lib/activity-deduplicator';
 import { AsyncLock } from './lib/async-lock';
 import { QUERY_STALE_TIME_MS, AUTO_FETCH_DEBOUNCE_MS } from './lib/constants';
 import {
   isConfigInCooldown,
-  createActivityFingerprintGetter,
-  createSuccessStatus,
-  createErrorStatus,
-  formatImportResultMessage,
+  createPendingStatus,
 } from './lib/auto-fetch-helpers';
+import { processFlexQueryConfig } from './lib/auto-fetch-processor';
+import { getErrorMessage } from './lib/shared-utils';
 
 // Lock for preventing concurrent auto-fetch operations
 const autoFetchLock = new AsyncLock();
@@ -94,6 +86,8 @@ export function enable(ctx: AddonContext) {
 
   // Cleanup functions to call on disable
   const cleanupFunctions: (() => void)[] = [];
+  // Track if addon has been disabled to prevent adding cleanup functions after disable
+  let isDisabled = false;
 
   // Create lazy-loaded components that match SDK's expected type
   // React.lazy() returns LazyExoticComponent which is what the router expects
@@ -183,6 +177,9 @@ export function enable(ctx: AddonContext) {
           if (newAccount) {
             accountsByCurrency.set(expected.currency, newAccount);
             ctx.api.logger?.info(`Created account: ${expected.name}`);
+          } else {
+            // API returned null/undefined without throwing - treat as error
+            ctx.api.logger?.error(`Failed to create account ${expected.name}: API returned null`);
           }
         } catch (e) {
           ctx.api.logger?.error(`Failed to create account ${expected.name}: ${e}`);
@@ -195,6 +192,7 @@ export function enable(ctx: AddonContext) {
 
   /**
    * Auto-fetch and import for all enabled configs
+   * Orchestrates the fetch process while delegating actual processing to auto-fetch-processor
    */
   const performAutoFetch = async () => {
     // Use lock to prevent concurrent fetches (tryAcquire for non-blocking check)
@@ -212,8 +210,13 @@ export function enable(ctx: AddonContext) {
         return;
       }
 
-      // Load all configs
-      const configs = await loadConfigs(ctx.api.secrets);
+      // Load all configs (using safe loader to distinguish errors from empty)
+      const loadResult = await loadConfigsSafe(ctx.api.secrets);
+      if (!loadResult.success) {
+        ctx.api.logger?.error(`IBKR auto-fetch: Failed to load configs - ${loadResult.error}`);
+        return;
+      }
+      const configs = loadResult.configs ?? [];
       const enabledConfigs = configs.filter((c) => c.autoFetchEnabled);
 
       if (enabledConfigs.length === 0) {
@@ -225,151 +228,42 @@ export function enable(ctx: AddonContext) {
 
       // Process each enabled config
       for (const config of enabledConfigs) {
-        // Create a toast ID for this config to update it later
-        const toastId = `ibkr-fetch-${config.id}`;
+        // Check per-config cooldown (initial check using cached config)
+        const cooldownCheck = isConfigInCooldown(config.lastFetchTime);
+        if (cooldownCheck.inCooldown) {
+          ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: cooldown active (${cooldownCheck.hoursRemaining}h remaining)`);
+          continue;
+        }
 
-        try {
-          // Check per-config cooldown
-          const cooldownCheck = isConfigInCooldown(config.lastFetchTime);
-          if (cooldownCheck.inCooldown) {
-            ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: cooldown active (${cooldownCheck.hoursRemaining}h remaining)`);
-            continue;
-          }
-
-          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Starting...`);
-
-          // Show loading toast
-          const toast = getToast();
-          toast?.loading(`IBKR: Fetching ${config.name}...`, { id: toastId });
-
-          // 1. Fetch CSV from IBKR
-          const result = await fetchFlexQuery(
-            { token, queryId: config.queryId },
-            { onProgress: (msg) => ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: ${msg}`) }
-          );
-
-          if (!result.success || !result.csv) {
-            throw new Error(result.error || "Fetch failed");
-          }
-
-          // 2. Parse CSV
-          const parsed = parseFlexQueryCSV(result.csv);
-          if (parsed.errors.length > 0) {
-            ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Parse warnings: ${parsed.errors.join(", ")}`);
-          }
-
-          if (parsed.rows.length === 0) {
-            ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: No transactions found`);
-            // Update status even for empty results (atomically to avoid race conditions)
-            try {
-              await updateConfigStatus(ctx.api.secrets, config.id, createSuccessStatus());
-            } catch (saveError) {
-              ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save status`);
+        // TOCTOU fix: Re-load and re-check config right before fetch
+        const freshLoadResult = await loadConfigsSafe(ctx.api.secrets);
+        if (freshLoadResult.success) {
+          const freshConfig = freshLoadResult.configs?.find(c => c.id === config.id);
+          if (freshConfig) {
+            const freshCooldownCheck = isConfigInCooldown(freshConfig.lastFetchTime);
+            if (freshCooldownCheck.inCooldown) {
+              ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: cooldown became active (${freshCooldownCheck.hoursRemaining}h remaining)`);
+              continue;
             }
-            // Show info toast for no new transactions
-            getToast()?.success(`IBKR: ${config.name}`, {
-              id: toastId,
-              description: "No new transactions found",
-            });
-            continue;
-          }
-
-          // 3. Detect currencies and get/create accounts
-          const currencies = detectCurrenciesFromIBKR(parsed.rows);
-          const accountsByCurrency = await getOrCreateAccountsForGroup(config.accountGroup, currencies);
-
-          // 4. Preprocess the data
-          const preprocessResult = preprocessIBKRData(parsed.rows);
-          const processedData = preprocessResult.processedData;
-
-          // 5. Build account previews for the converter
-          const accountPreviews = currencies.map((currency) => ({
-            currency,
-            name: `${config.accountGroup} - ${currency}`,
-            existingAccount: accountsByCurrency.get(currency),
-          }));
-
-          // 6. Convert to activity imports
-          const allActivities = await convertToActivityImports(processedData, accountPreviews);
-
-          // 7. Set accountId on each activity and import with deduplication
-          let totalImported = 0;
-          let totalSkipped = 0;
-          for (const currency of currencies) {
-            const account = accountsByCurrency.get(currency);
-            if (!account) continue;
-
-            // Filter activities for this currency account
-            const currencyActivities = allActivities.filter((a) => a.currency === currency);
-            if (currencyActivities.length === 0) continue;
-
-            // Set accountId on each activity
-            const activitiesWithAccountId = currencyActivities.map((a) => ({
-              ...a,
-              accountId: account.id,
-            }));
-
-            // Deduplicate and import
-            if (activitiesWithAccountId.length > 0 && ctx.api.activities) {
-              try {
-                // Deduplicate before importing
-                const getExistingFingerprints = createActivityFingerprintGetter(ctx.api.activities);
-                const { toImport, duplicatesSkipped } = await deduplicateActivities(
-                  activitiesWithAccountId,
-                  account.id,
-                  getExistingFingerprints
-                );
-
-                totalSkipped += duplicatesSkipped;
-
-                if (toImport.length > 0) {
-                  await ctx.api.activities.import(toImport);
-                  totalImported += toImport.length;
-                  ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: Imported ${toImport.length} to ${account.name}`);
-                }
-
-                if (duplicatesSkipped > 0) {
-                  ctx.api.logger?.trace(`IBKR auto-fetch [${config.name}]: Skipped ${duplicatesSkipped} duplicates for ${account.name}`);
-                }
-              } catch (importError) {
-                ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Import error for ${account.name}: ${importError}`);
-              }
-            }
-          }
-
-          // 6. Update config status (atomically to avoid race conditions)
-          try {
-            await updateConfigStatus(ctx.api.secrets, config.id, createSuccessStatus());
-          } catch (saveError) {
-            ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save success status`);
-          }
-
-          const resultMessage = formatImportResultMessage(totalImported, totalSkipped);
-          ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Complete - ${resultMessage}`);
-
-          // Show success toast
-          getToast()?.success(`IBKR: ${config.name}`, {
-            id: toastId,
-            description: resultMessage,
-          });
-
-        } catch (error) {
-          const errorStatus = createErrorStatus(error);
-          ctx.api.logger?.error(`IBKR auto-fetch [${config.name}]: Error - ${errorStatus.lastFetchError}`);
-
-          // Show error toast
-          getToast()?.error(`IBKR: ${config.name} failed`, {
-            id: toastId,
-            description: errorStatus.lastFetchError,
-          });
-
-          // Update config with error status (atomically to avoid race conditions)
-          try {
-            await updateConfigStatus(ctx.api.secrets, config.id, errorStatus);
-          } catch (saveError) {
-            ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to save error status`);
           }
         }
+
+        ctx.api.logger?.info(`IBKR auto-fetch [${config.name}]: Starting...`);
+
+        // TOCTOU fix: Claim the config by updating lastFetchTime BEFORE starting fetch
+        try {
+          await updateConfigStatus(ctx.api.secrets, config.id, createPendingStatus());
+        } catch (claimError) {
+          ctx.api.logger?.warn(`IBKR auto-fetch [${config.name}]: Failed to claim config, skipping`);
+          continue;
+        }
+
+        // Process the config using the extracted processor
+        await processFlexQueryConfig(config, {
+          ctx,
+          token,
+          getOrCreateAccountsForGroup,
+        });
       }
 
     } catch (error) {
@@ -396,23 +290,43 @@ export function enable(ctx: AddonContext) {
     // and handle errors synchronously to prevent unhandled rejections
     void ctx.api.events.portfolio.onUpdateComplete(debouncedAutoFetch)
       .then((unlisten) => {
-        cleanupFunctions.push(unlisten);
+        // If addon was disabled while registration was pending, clean up immediately
+        if (isDisabled) {
+          try {
+            unlisten();
+          } catch (error) {
+            ctx.api.logger?.warn(`IBKR addon: Failed to unregister event listener (late cleanup): ${getErrorMessage(error)}`);
+          }
+          return;
+        }
+
+        // Wrap unlisten in error handler at registration time for better cleanup safety
+        cleanupFunctions.push(() => {
+          try {
+            unlisten();
+          } catch (error) {
+            ctx.api.logger?.warn(`IBKR addon: Failed to unregister event listener: ${getErrorMessage(error)}`);
+          }
+        });
         ctx.api.logger?.trace(`IBKR addon: Registered portfolio update listener (${AUTO_FETCH_DEBOUNCE_MS}ms debounce)`);
       })
       .catch((error) => {
         // Log but don't rethrow - addon should continue working even if event registration fails
-        ctx.api.logger?.warn(`IBKR addon: Failed to register event listener: ${error instanceof Error ? error.message : String(error)}`);
+        ctx.api.logger?.warn(`IBKR addon: Failed to register event listener: ${getErrorMessage(error)}`);
       });
   }
 
   // Return cleanup function
   return {
     disable: () => {
+      // Mark as disabled first to prevent race conditions with async registrations
+      isDisabled = true;
+
       for (const cleanup of cleanupFunctions) {
         try {
           cleanup();
         } catch (e) {
-          ctx.api.logger?.warn?.(`IBKR addon cleanup error: ${String(e)}`);
+          ctx.api.logger?.warn(`IBKR addon cleanup error: ${String(e)}`);
         }
       }
       ctx.api.logger?.info("IBKR addon disabled");

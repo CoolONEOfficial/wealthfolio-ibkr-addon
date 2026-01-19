@@ -1,12 +1,21 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import Papa, { ParseResult } from "papaparse";
 import { CsvRowData, CsvRowError } from "../presets/types";
 import { extractTradesSection, isMultiSectionIBKR } from "../lib/ibkr-csv-splitter";
-import { MAX_FILE_SIZE_BYTES, MAX_FILES } from "../lib/constants";
+import { MAX_FILE_SIZE_BYTES, MAX_FILES, FILE_READ_TIMEOUT_MS } from "../lib/constants";
+import { debug } from "../lib/debug-logger";
+import { getErrorMessage, validateCsvHeaders } from "../lib/shared-utils";
 
-// Validation function for headers
-function validateHeaders(headers: string[]): boolean {
-  return headers.length >= 3 && !headers.some((header) => !header || header.trim() === "");
+/**
+ * Read file with timeout to prevent hanging UI
+ */
+async function readFileWithTimeout(file: File, timeoutMs: number): Promise<string> {
+  return Promise.race([
+    file.text(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`File read timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+    ),
+  ]);
 }
 
 // Validate file inputs before processing
@@ -42,7 +51,6 @@ interface MultiCsvParserState {
   isParsing: boolean;
   selectedFiles: File[];
   files: FileInfo[];
-  rawCsvLines: string[][];
 }
 
 const initialState: MultiCsvParserState = {
@@ -52,11 +60,19 @@ const initialState: MultiCsvParserState = {
   isParsing: false,
   selectedFiles: [],
   files: [],
-  rawCsvLines: [],
 };
 
 export function useMultiCsvParser() {
   const [state, setState] = useState<MultiCsvParserState>(initialState);
+
+  // Track mounted state to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Reset parser state
   const resetParserStates = useCallback(() => {
@@ -69,6 +85,7 @@ export function useMultiCsvParser() {
       // Validate inputs first
       const validationError = validateFileInputs(files);
       if (validationError) {
+        if (!isMountedRef.current) return;
         setState({
           ...initialState,
           selectedFiles: files,
@@ -84,6 +101,7 @@ export function useMultiCsvParser() {
       }
 
       // Reset state before starting
+      if (!isMountedRef.current) return;
       setState({
         ...initialState,
         selectedFiles: files,
@@ -91,17 +109,17 @@ export function useMultiCsvParser() {
       });
 
       try {
-        // Read all files as text (handle individual file read errors)
+        // Read all files as text with timeout (handle individual file read errors)
         const fileReadResults = await Promise.all(
           files.map(async (file) => {
             try {
-              const text = await file.text();
+              const text = await readFileWithTimeout(file, FILE_READ_TIMEOUT_MS);
               return { file, text, error: null };
             } catch (readError) {
               return {
                 file,
                 text: null,
-                error: readError instanceof Error ? readError.message : String(readError)
+                error: getErrorMessage(readError)
               };
             }
           })
@@ -114,8 +132,8 @@ export function useMultiCsvParser() {
         for (const result of fileReadResults) {
           if (result.error || result.text === null) {
             allErrors.push({
-              type: "FieldMismatch",
-              code: "UndetectableDelimiter",
+              type: "Delimiter", // More accurate: file read errors are I/O issues
+              code: "FileReadError",
               message: `Failed to read file "${result.file.name}": ${result.error || "Unknown error"}`,
               row: 0,
             });
@@ -136,15 +154,15 @@ export function useMultiCsvParser() {
             let processedCsv = text;
 
             if (isMultiSection) {
-              console.log(`Processing multi-section IBKR CSV: ${file.name}`);
+              debug.log(`Processing multi-section IBKR CSV: ${file.name}`);
               try {
                 processedCsv = extractTradesSection(text);
               } catch (error) {
                 const errorMsg = `Failed to extract IBKR sections from ${file.name}: ${error}`;
-                console.error(errorMsg);
+                debug.error(errorMsg);
                 allErrors.push({
-                  type: "FieldMismatch",
-                  code: "UndetectableDelimiter",
+                  type: "Delimiter", // IBKR section extraction failed
+                  code: "IBKRSectionError",
                   message: errorMsg,
                   row: 0,
                 });
@@ -182,10 +200,10 @@ export function useMultiCsvParser() {
 
             if (rawCsvLines.length === 0) {
               const errorMsg = `The file ${file.name} appears to be empty.`;
-              console.warn(errorMsg);
+              debug.warn(errorMsg);
               allErrors.push({
-                type: "FieldMismatch",
-                code: "MissingQuotes",
+                type: "Delimiter",
+                code: "EmptyFile",
                 message: errorMsg,
                 row: 0,
               });
@@ -196,12 +214,12 @@ export function useMultiCsvParser() {
             const fileHeaders = rawCsvLines[0].map((h) => h.trim());
 
             // Validate headers
-            if (!validateHeaders(fileHeaders)) {
+            if (!validateCsvHeaders(fileHeaders)) {
               const errorMsg = `Invalid CSV headers in ${file.name}. Expected at least 3 non-empty columns.`;
-              console.error(errorMsg);
+              debug.error(errorMsg);
               allErrors.push({
                 type: "FieldMismatch",
-                code: "TooFewFields",
+                code: "InvalidHeaders",
                 message: errorMsg,
                 row: 0,
               });
@@ -235,7 +253,7 @@ export function useMultiCsvParser() {
               // Check for row length mismatch against THIS file's headers
               if (rawRow.length < fileHeaders.length) {
                 const message = `${file.name}, row ${i + 1}: Expected ${fileHeaders.length} fields but found ${rawRow.length}.`;
-                console.warn(message);
+                debug.warn(message);
                 allErrors.push({
                   type: "FieldMismatch",
                   code: "TooFewFields",
@@ -246,6 +264,10 @@ export function useMultiCsvParser() {
 
               // Build row object using THIS FILE's headers (not merged headers)
               // This ensures correct column-to-value mapping regardless of header differences
+              // Track if row has fewer columns than headers (potential data loss)
+              if (rawRow.length < fileHeaders.length) {
+                debug.warn(`[CSV Parser] Row ${lineNumber} in ${file.name} has ${rawRow.length} columns but expected ${fileHeaders.length}`);
+              }
               fileHeaders.forEach((header, index) => {
                 const value = rawRow[index];
                 rowData[header] = typeof value === "string" ? value.trim() : (value ?? "");
@@ -262,10 +284,10 @@ export function useMultiCsvParser() {
             });
           } catch (error) {
             const errorMsg = `Error processing ${file.name}: ${error}`;
-            console.error(errorMsg);
+            debug.error(errorMsg);
             allErrors.push({
-              type: "FieldMismatch",
-              code: "UndetectableDelimiter",
+              type: "Delimiter",
+              code: "ProcessingError",
               message: errorMsg,
               row: 0,
             });
@@ -274,30 +296,33 @@ export function useMultiCsvParser() {
 
         // Check if we got any data
         if (mergedData.length === 0) {
-          const errorMsg = "No valid data found in any of the selected files.";
-          console.error(errorMsg);
+          const genericErrorMsg = "No valid data found in any of the selected files.";
+          debug.error(genericErrorMsg);
+          // Prioritize specific file errors over generic message so users see actual causes first
+          const errorsToShow = allErrors.length > 0
+            ? allErrors
+            : [{
+                type: "Delimiter" as const,
+                code: "NoValidData" as const,
+                message: genericErrorMsg,
+                row: 0,
+              }];
+          if (!isMountedRef.current) return;
           setState({
             ...initialState,
             selectedFiles: files,
             isParsing: false,
-            errors: [
-              {
-                type: "FieldMismatch",
-                code: "TooFewFields",
-                message: errorMsg,
-                row: 0,
-              },
-              ...allErrors,
-            ],
+            errors: errorsToShow,
           });
           return;
         }
 
         // Successful parsing
-        console.log(
+        debug.log(
           `Successfully parsed ${files.length} files with ${mergedData.length} total rows`
         );
 
+        if (!isMountedRef.current) return;
         setState({
           ...initialState,
           selectedFiles: files,
@@ -309,15 +334,16 @@ export function useMultiCsvParser() {
         });
       } catch (error) {
         const errorMsg = `Unexpected error parsing files: ${error}`;
-        console.error(errorMsg);
+        debug.error(errorMsg);
+        if (!isMountedRef.current) return;
         setState({
           ...initialState,
           selectedFiles: files,
           isParsing: false,
           errors: [
             {
-              type: "FieldMismatch",
-              code: "UndetectableDelimiter",
+              type: "Delimiter",
+              code: "UnexpectedError",
               message: errorMsg,
               row: 0,
             },
@@ -325,6 +351,9 @@ export function useMultiCsvParser() {
         });
       }
     },
+    // Empty dependency array is intentional: parseMultipleCsvFiles only depends on
+    // setState which is stable, and constants (MAX_FILE_SIZE_BYTES, etc.) which never change.
+    // This prevents unnecessary recreation of the callback and potential stale closures.
     []
   );
 
@@ -344,7 +373,6 @@ export function useMultiCsvParser() {
     isParsing: state.isParsing,
     selectedFiles: state.selectedFiles,
     files: state.files, // Info about each parsed file
-    rawData: state.rawCsvLines,
     parseMultipleCsvFiles,
     resetParserStates,
   };

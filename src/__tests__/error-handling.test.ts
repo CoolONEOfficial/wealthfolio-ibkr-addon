@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fetchFlexQuery, setHttpClient, validateFlexToken, validateQueryId } from "../lib/flex-query-fetcher";
+import { fetchFlexQuery, setHttpClient, validateFlexToken, validateQueryId, testFlexConnection } from "../lib/flex-query-fetcher";
 import { AsyncLock, withLock } from "../lib/async-lock";
 
 describe("Error Handling", () => {
@@ -179,6 +179,286 @@ describe("Error Handling", () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("Network error");
+      });
+
+      it("should retry on error code 1003 (generation in progress)", async () => {
+        let callCount = 0;
+        const mockHttpClient = {
+          fetch: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              // SendRequest - return success
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                status_text: "OK",
+                headers: {},
+                body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
+              });
+            }
+            if (callCount === 2) {
+              // First GetStatement - return 1003 (in progress)
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                status_text: "OK",
+                headers: {},
+                body: `<FlexStatementResponse><Status>Warn</Status><ErrorCode>1003</ErrorCode><ErrorMessage>Statement generation in progress</ErrorMessage></FlexStatementResponse>`,
+              });
+            }
+            // Second GetStatement - return success with CSV
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              status_text: "OK",
+              headers: {},
+              body: `<FlexQueryResponse><FlexStatements><FlexStatement>Symbol,Quantity\nAAPL,10</FlexStatement></FlexStatements></FlexQueryResponse>`,
+            });
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await fetchFlexQuery(
+          { token: "validtoken12345678", queryId: "123456" },
+          { initialDelayMs: 10, maxDelayMs: 20 }
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.csv).toContain("Symbol");
+        expect(callCount).toBeGreaterThanOrEqual(3);
+      }, 10000);
+
+      it("should retry on error code 1019 (rate limited)", async () => {
+        let callCount = 0;
+        const mockHttpClient = {
+          fetch: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              // SendRequest - return success
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                status_text: "OK",
+                headers: {},
+                body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
+              });
+            }
+            if (callCount === 2) {
+              // First GetStatement - return 1019 (rate limited)
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                status_text: "OK",
+                headers: {},
+                body: `<FlexStatementResponse><Status>Warn</Status><ErrorCode>1019</ErrorCode><ErrorMessage>Rate limited</ErrorMessage></FlexStatementResponse>`,
+              });
+            }
+            // Second GetStatement - return success
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              status_text: "OK",
+              headers: {},
+              body: `<FlexQueryResponse><FlexStatements><FlexStatement>Symbol,Quantity\nAAPL,10</FlexStatement></FlexStatements></FlexQueryResponse>`,
+            });
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await fetchFlexQuery(
+          { token: "validtoken12345678", queryId: "123456" },
+          { initialDelayMs: 10, maxDelayMs: 20 }
+        );
+
+        expect(result.success).toBe(true);
+        expect(callCount).toBeGreaterThanOrEqual(3);
+      }, 10000);
+
+      it("should fail on non-retryable error code", async () => {
+        let callCount = 0;
+        const mockHttpClient = {
+          fetch: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              // SendRequest - return success
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                status_text: "OK",
+                headers: {},
+                body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
+              });
+            }
+            // GetStatement - return non-retryable error (e.g., 1016 = statement not found)
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              status_text: "OK",
+              headers: {},
+              body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1016</ErrorCode><ErrorMessage>Statement not found</ErrorMessage></FlexStatementResponse>`,
+            });
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await fetchFlexQuery(
+          { token: "validtoken12345678", queryId: "123456" },
+          { initialDelayMs: 10, maxDelayMs: 20 }
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe(1016);
+        expect(result.error).toContain("Statement not found");
+      });
+    });
+
+    describe("testFlexConnection", () => {
+      beforeEach(() => {
+        setHttpClient(undefined as any);
+      });
+
+      it("should return success when SendRequest succeeds", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "validtoken12345678",
+          queryId: "123456",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain("successful");
+      });
+
+      it("should return error for invalid token (1015)", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1015</ErrorCode><ErrorMessage>Invalid token</ErrorMessage></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "invalidtoken12345",
+          queryId: "123456",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain("Invalid token");
+      });
+
+      it("should return error for expired token (1012)", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1012</ErrorCode><ErrorMessage>Token expired</ErrorMessage></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "expiredtoken12345",
+          queryId: "123456",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain("expired");
+      });
+
+      it("should return error for invalid Query ID (1014)", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1014</ErrorCode><ErrorMessage>Invalid query ID</ErrorMessage></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "validtoken12345678",
+          queryId: "invalid123",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain("Invalid Query ID");
+      });
+
+      it("should return error for IP not allowed (1013)", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1013</ErrorCode><ErrorMessage>IP not allowed</ErrorMessage></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "validtoken12345678",
+          queryId: "123456",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain("IP address not allowed");
+      });
+
+      it("should return generic error for unknown error codes", async () => {
+        const mockHttpClient = {
+          fetch: vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            status_text: "OK",
+            headers: {},
+            body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>9999</ErrorCode><ErrorMessage>Unknown error</ErrorMessage></FlexStatementResponse>`,
+          }),
+        };
+        setHttpClient(mockHttpClient);
+
+        const result = await testFlexConnection({
+          id: "test",
+          name: "Test Config",
+          token: "validtoken12345678",
+          queryId: "123456",
+          accountGroup: "Test Group",
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.message).toBe("Unknown error");
       });
     });
   });
