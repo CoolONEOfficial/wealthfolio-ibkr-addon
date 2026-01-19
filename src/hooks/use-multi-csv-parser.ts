@@ -3,9 +3,33 @@ import Papa, { ParseResult } from "papaparse";
 import { CsvRowData, CsvRowError } from "../presets/types";
 import { extractTradesSection, isMultiSectionIBKR } from "../lib/ibkr-csv-splitter";
 
+// Input validation limits
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB per file
+const MAX_FILES = 20;
+
 // Validation function for headers
 function validateHeaders(headers: string[]): boolean {
   return headers.length >= 3 && !headers.some((header) => !header || header.trim() === "");
+}
+
+// Validate file inputs before processing
+function validateFileInputs(files: File[]): string | null {
+  if (files.length === 0) {
+    return "No files selected";
+  }
+  if (files.length > MAX_FILES) {
+    return `Too many files selected (maximum ${MAX_FILES})`;
+  }
+  for (const file of files) {
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      const sizeMB = Math.round(file.size / (1024 * 1024));
+      return `File "${file.name}" is too large (${sizeMB}MB, maximum 50MB)`;
+    }
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      return `File "${file.name}" is not a CSV file`;
+    }
+  }
+  return null;
 }
 
 interface FileInfo {
@@ -45,6 +69,23 @@ export function useMultiCsvParser() {
   // Parse multiple CSV files
   const parseMultipleCsvFiles = useCallback(
     async (files: File[]) => {
+      // Validate inputs first
+      const validationError = validateFileInputs(files);
+      if (validationError) {
+        setState({
+          ...initialState,
+          selectedFiles: files,
+          isParsing: false,
+          errors: [{
+            type: "FieldMismatch",
+            code: "TooFewFields",
+            message: validationError,
+            row: 0,
+          }],
+        });
+        return;
+      }
+
       // Reset state before starting
       setState({
         ...initialState,

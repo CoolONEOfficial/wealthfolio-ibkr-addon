@@ -14,9 +14,13 @@ import { generateAccountNames } from './lib/account-name-generator';
 import { preprocessIBKRData } from './lib/ibkr-preprocessor';
 import { convertToActivityImports } from './lib/activity-converter';
 import { deduplicateActivities } from './lib/activity-deduplicator';
+import { AsyncLock } from './lib/async-lock';
 
 // Cooldown: 6 hours (IBKR Activity Statements update once daily)
 const FETCH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+// Lock for preventing concurrent auto-fetch operations
+const autoFetchLock = new AsyncLock();
 
 // Create a shared QueryClient for addon pages that use React Query
 const queryClient = new QueryClient({
@@ -50,9 +54,6 @@ export function enable(ctx: AddonContext) {
 
   // Cleanup functions to call on disable
   const cleanupFunctions: (() => void)[] = [];
-
-  // Concurrent fetch guard
-  let fetchInProgress = false;
 
   // Wrap components to provide context
   // Settings page uses React Query hooks, so it needs QueryClientProvider
@@ -147,13 +148,12 @@ export function enable(ctx: AddonContext) {
    * Auto-fetch and import for all enabled configs
    */
   const performAutoFetch = async () => {
-    // Concurrent fetch guard
-    if (fetchInProgress) {
+    // Use lock to prevent concurrent fetches (tryAcquire for non-blocking check)
+    const release = autoFetchLock.tryAcquire();
+    if (!release) {
       ctx.api.logger?.trace("IBKR auto-fetch skipped: fetch already in progress");
       return;
     }
-
-    fetchInProgress = true;
 
     try {
       // Load shared token
@@ -331,7 +331,7 @@ export function enable(ctx: AddonContext) {
       const msg = error instanceof Error ? error.message : "Unknown error";
       ctx.api.logger?.error(`IBKR auto-fetch error: ${msg}`);
     } finally {
-      fetchInProgress = false;
+      release();
     }
   };
 
@@ -352,7 +352,7 @@ export function enable(ctx: AddonContext) {
         try {
           cleanup();
         } catch (e) {
-          // Ignore cleanup errors
+          ctx.api.logger?.warn?.(`IBKR addon cleanup error: ${String(e)}`);
         }
       }
       ctx.api.logger?.info("IBKR addon disabled");
