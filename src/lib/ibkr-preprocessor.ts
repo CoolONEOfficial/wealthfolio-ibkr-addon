@@ -1,5 +1,6 @@
 import { IBKRTransactionRow, IBKRClassification, CsvRowData } from "../presets/types";
 import { normalizeNumericValue } from "./validation-utils";
+import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
 
 /**
  * IBKR Transaction Preprocessor
@@ -828,19 +829,7 @@ export function preprocessIBKRData(data: CsvRowData[]): {
         }
 
         if (activityCodeForCurrency === "TTAX" && row.ListingExchange) {
-          // Map common exchanges to their currencies
-          const exchangeToCurrency: Record<string, string> = {
-            "NYSE": "USD", "NASDAQ": "USD", "AMEX": "USD", "ARCA": "USD",
-            "BATS": "USD", "IEX": "USD", "CBOE": "USD", "PINK": "USD",
-            "LSE": "GBP", "LSEIOB1": "GBP",
-            "EBS": "CHF", "SBF": "EUR", "AEB": "EUR", "BVME": "EUR",
-            "FWB": "EUR", "IBIS": "EUR",
-            "SEHK": "HKD", "TSE": "JPY", "SGX": "SGD",
-            "ASX": "AUD",
-            "OSE": "NOK", "SFB": "SEK", "KFB": "DKK",
-            "TSX": "CAD", "VENTURE": "CAD",
-          };
-          const exchangeCurrency = exchangeToCurrency[row.ListingExchange.trim()];
+          const exchangeCurrency = EXCHANGE_TO_CURRENCY[row.ListingExchange.trim()];
           if (exchangeCurrency) {
             currency = exchangeCurrency;
           }
