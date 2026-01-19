@@ -1,3 +1,4 @@
+import React from 'react';
 import type { AddonContext, Account } from '@wealthfolio/addon-sdk';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import IBKRMultiImportPage from './pages/ibkr-multi-import-page';
@@ -15,9 +16,7 @@ import { preprocessIBKRData } from './lib/ibkr-preprocessor';
 import { convertToActivityImports } from './lib/activity-converter';
 import { deduplicateActivities } from './lib/activity-deduplicator';
 import { AsyncLock } from './lib/async-lock';
-
-// Cooldown: 6 hours (IBKR Activity Statements update once daily)
-const FETCH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+import { FETCH_COOLDOWN_MS, QUERY_STALE_TIME_MS } from './lib/constants';
 
 // Lock for preventing concurrent auto-fetch operations
 const autoFetchLock = new AsyncLock();
@@ -27,7 +26,7 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // Reasonable defaults for addon context
-      staleTime: 30 * 1000, // 30 seconds
+      staleTime: QUERY_STALE_TIME_MS,
       refetchOnWindowFocus: false,
     },
   },
@@ -57,23 +56,25 @@ export function enable(ctx: AddonContext) {
 
   // Wrap components to provide context
   // Settings page uses React Query hooks, so it needs QueryClientProvider
-  const ImportPageWithContext = () => <IBKRMultiImportPage ctx={ctx} />;
-  const SettingsPageWithContext = () => (
+  const ImportPageWithContext: React.ComponentType = () => <IBKRMultiImportPage ctx={ctx} />;
+  const SettingsPageWithContext: React.ComponentType = () => (
     <QueryClientProvider client={queryClient}>
       <IBKRFlexSettingsPage ctx={ctx} />
     </QueryClientProvider>
   );
 
   // Register the import page route
+  // Note: SDK router expects LazyExoticComponent but we use regular components
+  // Using 'unknown' cast for type compatibility with SDK internals
   ctx.router.add({
     path: 'activities/import/ibkr-multi',
-    component: ImportPageWithContext as any,
+    component: ImportPageWithContext as unknown as React.LazyExoticComponent<React.ComponentType<unknown>>,
   });
 
   // Register the settings page route
   ctx.router.add({
     path: 'settings/ibkr-flex',
-    component: SettingsPageWithContext as any,
+    component: SettingsPageWithContext as unknown as React.LazyExoticComponent<React.ComponentType<unknown>>,
   });
 
   // Add sidebar item for import
@@ -267,8 +268,9 @@ export function enable(ctx: AddonContext) {
                   account.id,
                   async (accountId: string) => {
                     const activities = await ctx.api.activities!.getAll(accountId);
-                    return activities.map((a: any) => ({
-                      activityDate: a.date,
+                    return activities.map((a) => ({
+                      // Convert Date to ISO string for deduplication fingerprinting
+                      activityDate: a.date instanceof Date ? a.date.toISOString().split('T')[0] : String(a.date),
                       assetId: a.assetSymbol, // Use assetSymbol (ticker) not assetId (internal ID)
                       activityType: a.activityType,
                       quantity: a.quantity,

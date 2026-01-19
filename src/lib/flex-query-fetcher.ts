@@ -11,6 +11,8 @@
  * - GetStatement endpoint: /GetStatement?t={TOKEN}&q={REFERENCE_CODE}&v=3
  */
 
+import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS } from "./constants";
+
 export interface FlexQueryConfig {
   token: string;
   queryId: string;
@@ -299,8 +301,8 @@ export async function fetchFlexQuery(
 ): Promise<FlexQueryResult> {
   const {
     maxRetries = 10,
-    initialDelayMs = 2000,
-    maxDelayMs = 30000,
+    initialDelayMs = FLEX_QUERY_INITIAL_DELAY_MS,
+    maxDelayMs = FLEX_QUERY_MAX_DELAY_MS,
     onProgress,
   } = options;
 

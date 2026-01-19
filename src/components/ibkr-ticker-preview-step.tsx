@@ -1,7 +1,6 @@
 import { Button } from "./simple-button";
 import { Icons } from "./simple-icons";
 import { ProgressIndicator } from "./simple-progress";
-import type { ActivityImport } from "@wealthfolio/addon-sdk";
 import { ImportAlert } from "./import-alert";
 import {
   Accordion,
@@ -9,20 +8,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "./simple-accordion";
-
-interface TransactionGroup {
-  currency: string;
-  accountName: string;
-  transactions: ActivityImport[];
-  summary: {
-    trades: number;
-    dividends: number;
-    deposits: number;
-    withdrawals: number;
-    fees: number;
-    other: number;
-  };
-}
+import type { TransactionGroup } from "../types";
 
 interface IBKRTickerPreviewStepProps {
   isResolving: boolean;

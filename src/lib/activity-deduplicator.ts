@@ -6,6 +6,7 @@
  */
 
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
+import { MAX_DEBUG_LOGS } from "./constants";
 
 /**
  * Normalize a numeric value for fingerprinting
@@ -260,7 +261,14 @@ export function filterDuplicateActivities(
   }
 
   for (const activity of existingActivities) {
-    const fingerprint = createExistingActivityFingerprint(activity);
+    // Normalize activityDate to string before creating fingerprint
+    const normalizedActivity = {
+      ...activity,
+      activityDate: activity.activityDate instanceof Date
+        ? activity.activityDate.toISOString().split('T')[0]
+        : String(activity.activityDate),
+    };
+    const fingerprint = createExistingActivityFingerprint(normalizedActivity);
     existingFingerprints.add(fingerprint);
 
     // Track by date+symbol for debugging
@@ -279,7 +287,6 @@ export function filterDuplicateActivities(
   const newFingerprints = new Set<string>();
 
   let debugLogCount = 0;
-  const MAX_DEBUG_LOGS = 5;
 
   for (const activity of newActivities) {
     const fingerprint = createActivityFingerprint(activity);

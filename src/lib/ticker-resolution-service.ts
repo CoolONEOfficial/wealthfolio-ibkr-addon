@@ -11,6 +11,7 @@ import {
   setSearchFunction,
   type TickerResolutionResult,
 } from "./ticker-resolver";
+import { TICKER_RESOLUTION_DELAY_MS } from "./constants";
 
 export interface TickerResolution {
   originalSymbol: string;
@@ -189,7 +190,7 @@ export async function resolveTickersFromIBKR(
     }
 
     // Small delay to avoid rate limiting
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, TICKER_RESOLUTION_DELAY_MS));
   }
 
   // Apply resolutions to all rows

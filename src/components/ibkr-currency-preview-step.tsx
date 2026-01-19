@@ -1,17 +1,9 @@
 import { Button } from "./simple-button";
 import { Input } from "@wealthfolio/ui";
 import { Icons } from "./simple-icons";
-import type { Account } from "@wealthfolio/addon-sdk";
 import { HelpTooltip } from "./help-tooltip";
 import { ImportAlert } from "./import-alert";
-
-interface AccountPreview {
-  currency: string;
-  name: string;
-  group: string;
-  transactionCount: number;
-  existingAccount?: Account;
-}
+import type { AccountPreview } from "../types";
 
 interface IBKRCurrencyPreviewStepProps {
   accountPreviews: AccountPreview[];

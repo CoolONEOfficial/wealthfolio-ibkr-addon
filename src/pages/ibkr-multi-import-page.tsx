@@ -1,5 +1,5 @@
 import { Card, Page, PageContent, PageHeader } from "@wealthfolio/ui";
-import type { Account, AddonContext } from "@wealthfolio/addon-sdk";
+import type { Account, AddonContext, ActivityImport } from "@wealthfolio/addon-sdk";
 import React, { useState, useEffect } from "react";
 import { detectCurrenciesFromIBKR } from "../lib/currency-detector";
 import { generateAccountNames } from "../lib/account-name-generator";
@@ -17,6 +17,7 @@ import { IBKRCurrencyPreviewStep } from "../components/ibkr-currency-preview-ste
 import { IBKRTickerPreviewStep } from "../components/ibkr-ticker-preview-step";
 import { IBKRImportResultsStep } from "../components/ibkr-import-results-step";
 import { CsvRowData } from "../presets/types";
+import type { AccountPreview, TransactionGroup, ImportResult, ActivityFingerprint, ProgressInfo } from "../types";
 
 // Secret keys for stored credentials
 const SECRET_FLEX_TOKEN = "flex_token";
@@ -61,17 +62,17 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
   } = useMultiCsvParser();
 
   // Step 2 state
-  const [accountPreviews, setAccountPreviews] = useState<any[]>([]);
+  const [accountPreviews, setAccountPreviews] = useState<AccountPreview[]>([]);
 
   // Step 3 state
   const [isResolving, setIsResolving] = useState(false);
-  const [resolutionProgress, setResolutionProgress] = useState<{ current: number; total: number } | undefined>();
-  const [transactionGroups, setTransactionGroups] = useState<any[]>([]);
+  const [resolutionProgress, setResolutionProgress] = useState<ProgressInfo | undefined>();
+  const [transactionGroups, setTransactionGroups] = useState<TransactionGroup[]>([]);
 
   // Step 4 state
   const [isImporting, setIsImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ current: number; total: number; message?: string } | undefined>();
-  const [importResults, setImportResults] = useState<any[]>([]);
+  const [importProgress, setImportProgress] = useState<ProgressInfo | undefined>();
+  const [importResults, setImportResults] = useState<ImportResult[]>([]);
 
   // Initialize HTTP client
   useEffect(() => {
@@ -190,9 +191,10 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
         await parseMultipleCsvFiles(selectedFiles);
         // The useEffect below will handle advancing to step 2
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error loading data:", error);
-      setLoadingMessage(`Error: ${error.message || "Failed to load data"}`);
+      const errorMessage = error instanceof Error ? error.message : "Failed to load data";
+      setLoadingMessage(`Error: ${errorMessage}`);
       setIsLoadingData(false);
     }
   };
@@ -211,7 +213,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     const accountNames = generateAccountNames(groupName, currencies);
 
     const transactionCounts = new Map<string, number>();
-    data.forEach((row: any) => {
+    data.forEach((row) => {
       const currency = row.CurrencyPrimary;
       if (currency) {
         transactionCounts.set(currency, (transactionCounts.get(currency) || 0) + 1);
@@ -293,25 +295,16 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       // This allows us to deduplicate against both:
       // 1. Duplicates within the batch (e.g., overlapping CSV files)
       // 2. Duplicates against existing DB activities (e.g., reimporting)
-      let allExistingActivities: Array<{
-        activityDate: string;
-        assetId: string;
-        activityType: string;
-        quantity: number;
-        unitPrice: number;
-        amount?: number;
-        fee: number;
-        currency: string;
-        comment?: string;
-      }> = [];
+      let allExistingActivities: ActivityFingerprint[] = [];
 
       if (ctx?.api?.activities) {
         const existingAccounts = updatedPreviews.filter(p => p.existingAccount);
         for (const preview of existingAccounts) {
           try {
             const accountActivities = await ctx.api.activities.getAll(preview.existingAccount!.id);
-            const mapped = accountActivities.map((a: any) => ({
-              activityDate: a.date,
+            const mapped: ActivityFingerprint[] = accountActivities.map((a) => ({
+              // Convert Date to ISO string for deduplication fingerprinting
+              activityDate: a.date instanceof Date ? a.date.toISOString().split('T')[0] : String(a.date),
               assetId: a.assetSymbol,
               activityType: a.activityType,
               quantity: a.quantity,
@@ -344,7 +337,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       }
 
       // Group by currency (using deduplicated activities)
-      const groupedByCurrency = new Map<string, any[]>();
+      const groupedByCurrency = new Map<string, ActivityImport[]>();
       dedupedActivities.forEach((activity) => {
         const currency = activity.currency || "USD";
         if (!groupedByCurrency.has(currency)) {
@@ -354,19 +347,20 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
       });
 
       // Create transaction groups
-      const groups: any[] = updatedPreviews.map((preview) => {
+      const groups: TransactionGroup[] = updatedPreviews.map((preview) => {
         const transactions = groupedByCurrency.get(preview.currency) || [];
         return {
           currency: preview.currency,
           accountName: preview.name,
           transactions,
           summary: {
-            trades: transactions.filter((t: any) => t.activityType?.includes("BUY") || t.activityType?.includes("SELL")).length,
-            dividends: transactions.filter((t: any) => t.activityType?.includes("DIVIDEND")).length,
-            deposits: transactions.filter((t: any) => t.activityType === "DEPOSIT" || t.activityType === "TRANSFER_IN").length,
-            withdrawals: transactions.filter((t: any) => t.activityType === "WITHDRAWAL" || t.activityType === "TRANSFER_OUT").length,
-            fees: transactions.filter((t: any) => t.activityType?.includes("FEE")).length,
-            other: transactions.filter((t: any) => !t.activityType || t.activityType === "UNKNOWN").length,
+            trades: transactions.filter((t) => t.activityType?.includes("BUY") || t.activityType?.includes("SELL")).length,
+            dividends: transactions.filter((t) => t.activityType?.includes("DIVIDEND")).length,
+            deposits: transactions.filter((t) => t.activityType === "DEPOSIT" || t.activityType === "TRANSFER_IN").length,
+            withdrawals: transactions.filter((t) => t.activityType === "WITHDRAWAL" || t.activityType === "TRANSFER_OUT").length,
+            fees: transactions.filter((t) => t.activityType?.includes("FEE")).length,
+            // Cast to string for comparison since activityType might have values not in SDK enum
+            other: transactions.filter((t) => !t.activityType || (t.activityType as string) === "UNKNOWN").length,
           },
         };
       });
@@ -390,7 +384,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
     setIsImporting(true);
     setCurrentStep(4);
 
-    const results: any[] = [];
+    const results: ImportResult[] = [];
     let currentProgress = 0;
     const totalSteps = accountPreviews.length + transactionGroups.length;
 
@@ -432,7 +426,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
 
         try {
           // Group transactions by their actual currency
-          const transactionsByCurrency = new Map<string, any[]>();
+          const transactionsByCurrency = new Map<string, ActivityImport[]>();
           for (const txn of group.transactions) {
             const txnCurrency = txn.currency || group.currency;
             if (!transactionsByCurrency.has(txnCurrency)) {
@@ -463,14 +457,15 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
               accountPreviews.push({
                 currency: txnCurrency,
                 name: newAccountName,
+                group: groupName,
+                transactionCount: transactions.length,
                 existingAccount: newAccount,
-                shouldCreate: false,
               });
             }
 
             // Set accountId on each transaction and import directly
             // (deduplication already happened in Step 3)
-            const transactionsWithAccountId = transactions.map((txn: any) => ({
+            const transactionsWithAccountId = transactions.map((txn) => ({
               ...txn,
               accountId: targetAccount!.id,
             }));
@@ -490,9 +485,8 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
             skipped: 0, // Duplicates already removed in Step 3
             errors: [],
           });
-        } catch (error: any) {
-          let errorMessage = String(error);
-          if (error?.message) errorMessage = error.message;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
 
           results.push({
             accountId: accountPreviews.find((p) => p.currency === group.currency)?.existingAccount?.id || "",
@@ -500,6 +494,7 @@ const IBKRMultiImportPage: React.FC<IBKRMultiImportPageProps> = ({ ctx }) => {
             currency: group.currency,
             success: 0,
             failed: group.transactions.length,
+            skipped: 0,
             errors: [errorMessage],
           });
         }

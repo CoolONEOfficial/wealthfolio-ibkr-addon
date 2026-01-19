@@ -1,5 +1,6 @@
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
 import { EXCHANGE_TO_CURRENCY } from "./exchange-utils";
+import type { AccountPreview } from "../types";
 
 /**
  * Activity Converter Service
@@ -346,8 +347,10 @@ function determineTransactionCurrency(row: any, baseCurrency: string): string {
  * Convert IBKR CSV rows to ActivityImport format
  */
 export async function convertToActivityImports(
+  // Using 'any' for processedData as it contains dynamically-keyed CSV row data
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   processedData: any[],
-  accountPreviews: any[]
+  accountPreviews: AccountPreview[]
 ): Promise<ActivityImport[]> {
   const activities: ActivityImport[] = [];
 

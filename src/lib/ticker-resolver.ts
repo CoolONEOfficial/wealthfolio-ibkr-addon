@@ -10,6 +10,8 @@
  * NO hardcoded exchange suffixes - all resolution is ISIN-based via Yahoo Finance API
  */
 
+import { API_REQUEST_TIMEOUT_MS } from "./constants";
+
 export interface TickerResolutionRequest {
   isin: string;
   symbol: string;
@@ -372,7 +374,7 @@ async function searchYahooFinanceByISIN(
 
     // Add timeout to fetch
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
 
     const response = await fetch(url, {
       headers: {

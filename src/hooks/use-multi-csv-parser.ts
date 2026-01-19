@@ -2,10 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import Papa, { ParseResult } from "papaparse";
 import { CsvRowData, CsvRowError } from "../presets/types";
 import { extractTradesSection, isMultiSectionIBKR } from "../lib/ibkr-csv-splitter";
-
-// Input validation limits
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB per file
-const MAX_FILES = 20;
+import { MAX_FILE_SIZE_BYTES, MAX_FILES } from "../lib/constants";
 
 // Validation function for headers
 function validateHeaders(headers: string[]): boolean {
