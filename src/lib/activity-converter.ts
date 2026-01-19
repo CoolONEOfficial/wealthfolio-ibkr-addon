@@ -261,7 +261,7 @@ function getFXRate(
  *
  * TTAX descriptions have format: "French Daily Trade Charge Tax HESAY 6"
  * where "6" is the actual tax amount in the original currency (USD).
- * The Amount column contains the GBP base currency equivalent.
+ * The Amount column contains the base currency equivalent.
  *
  * @returns The original currency amount or null if not parseable
  */
@@ -342,7 +342,7 @@ function determineTransactionCurrency(row: any, baseCurrency: string): string {
 
   // For transaction taxes (TTAX), use the security's trading currency
   // TTAX rows have Amount in the original currency (e.g., USD for HESAY French FTT)
-  // even though CurrencyPrimary is the base currency (GBP)
+  // even though CurrencyPrimary is the account's base currency
   if (activityCode === "TTAX" && row.ListingExchange && EXCHANGE_TO_CURRENCY[row.ListingExchange]) {
     return EXCHANGE_TO_CURRENCY[row.ListingExchange];
   }
@@ -478,7 +478,7 @@ export async function convertToActivityImports(
         fee = 0;
       } else if (ibkrType === "IBKR_TAX") {
         // For taxes: Calculate amount from per-share × position × tax_rate
-        // Similar to dividends, TradeMoney is in base currency (GBP) for BaseCurrency level rows.
+        // Similar to dividends, TradeMoney is in base currency for BaseCurrency level rows.
         //
         // Tax descriptions have format: "SYMBOL(ISIN) CASH DIVIDEND XXX N.NN PER SHARE - CC TAX"
         // The tax is typically a percentage of the dividend (e.g., 15% US WHT).
@@ -543,7 +543,7 @@ export async function convertToActivityImports(
         // TradeMoney contains the cash amount
 
         // Special handling for TTAX (Transaction Tax) rows at BaseCurrency level
-        // The TradeMoney contains the GBP equivalent, but we need the original currency amount
+        // The TradeMoney contains the base currency equivalent, but we need the original currency amount
         // which is embedded in the description (e.g., "French Daily Trade Charge Tax HESAY 6")
         const activityCode = row.ActivityCode || "";
         if (activityCode === "TTAX") {
@@ -557,7 +557,7 @@ export async function convertToActivityImports(
           }
         } else if (activityCode === "OFEE" && row.ListingExchange && EXCHANGE_TO_CURRENCY[row.ListingExchange]) {
           // OFEE dividend fees at BaseCurrency level need FX conversion
-          // TradeMoney is in base currency (GBP), but the fee should be in the security's trading currency
+          // TradeMoney is in base currency, but the fee should be in the security's trading currency
           const targetCurrency = EXCHANGE_TO_CURRENCY[row.ListingExchange];
           const tradeMoneyBase = Math.abs(parseNumeric(row.TradeMoney));
           const txDate = row.Date || row.ReportDate || row.TradeDate || "";

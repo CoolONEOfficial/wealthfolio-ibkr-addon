@@ -107,7 +107,7 @@ function classifyIBKRTransaction(row: IBKRTransactionRow): IBKRClassification {
     // - STAX: Sales Tax / VAT - only at BaseCurrency level
     // - OFEE: Other fees - but with special handling (see below)
     // NOTE: DINT (Debit Interest) exists at BOTH BaseCurrency AND Currency levels.
-    //       Skip BaseCurrency level (has GBP amounts) - use Currency level (has real currency amounts).
+    //       Skip BaseCurrency level (has base currency amounts) - use Currency level (has real currency amounts).
     if (activityCode === "DIV" || activityCode === "TTAX" || activityCode === "STAX") {
       // Don't return here - let it fall through to proper classification
     } else if (activityCode === "OFEE") {
@@ -728,7 +728,7 @@ export function preprocessIBKRData(data: CsvRowData[]): {
         //
         // Transfers are linked via matching Description/comment field
         //
-        // IMPORTANT: FX commission is ALWAYS in the IBCommissionCurrency (usually GBP/base currency).
+        // IMPORTANT: FX commission is ALWAYS in the IBCommissionCurrency (the account's base currency).
         // We create a SEPARATE FEE activity for the commission to ensure it's deducted from the
         // correct currency account. The commission is NOT included in the transfer rows.
 
