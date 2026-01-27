@@ -45,6 +45,30 @@ export interface TickerCacheEntry {
 const YAHOO_FINANCE_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search";
 const YAHOO_FINANCE_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
+/**
+ * Check if two symbols are "compatible" for matching purposes.
+ * - Exact match: "SGLN" === "SGLN"
+ * - Numeric equivalence: parseInt("0101") === parseInt("101") (handles HK stocks)
+ */
+function areSymbolsCompatible(resultSymbol: string, requestSymbol: string): boolean {
+  const resultBase = resultSymbol.split('.')[0].toUpperCase();
+  const requestBase = requestSymbol.toUpperCase();
+
+  // Exact match
+  if (resultBase === requestBase) {
+    return true;
+  }
+
+  // Numeric equivalence (for HK stocks where 101 should match 0101)
+  const resultNum = parseInt(resultBase, 10);
+  const requestNum = parseInt(requestBase, 10);
+  if (!isNaN(resultNum) && !isNaN(requestNum) && resultNum === requestNum) {
+    return true;
+  }
+
+  return false;
+}
+
 const LOCALSTORAGE_CACHE_KEY = "ibkr_ticker_cache";
 
 /**
@@ -209,25 +233,19 @@ async function searchWealthfolioAPI(
           debug.log(`[Ticker Resolver] Result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange}, score: ${r.score})`);
         });
 
-        const upperSymbol = symbol.toUpperCase();
+        // Find compatible symbol match (exact or numeric equivalence for HK stocks)
+        const compatibleMatch = results.find(r => areSymbolsCompatible(r.symbol, symbol));
 
-        // ONLY return if we find an exact symbol match
-        // Otherwise skip and let fallback handle it (prevents SGLN -> IGLN.L type errors)
-        const exactMatch = results.find(r => {
-          const baseSymbol = r.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
-
-        if (exactMatch) {
-          debug.log(`[Ticker Resolver] Found exact symbol match: ${exactMatch.symbol}`);
+        if (compatibleMatch) {
+          debug.log(`[Ticker Resolver] Found compatible symbol match: ${compatibleMatch.symbol} (request: ${symbol})`);
           return {
-            yahooTicker: exactMatch.symbol,
+            yahooTicker: compatibleMatch.symbol,
             confidence: "high",
             source: "wealthfolio",
-            name: exactMatch.name || exactMatch.symbol,
+            name: compatibleMatch.name || compatibleMatch.symbol,
           };
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in ISIN search results, will try other methods`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in ISIN search results, will try other methods`);
         }
       }
     } catch (isinError) {
@@ -243,22 +261,17 @@ async function searchWealthfolioAPI(
       results = await searchTicker(cusip);
       debug.log(`[Ticker Resolver] Wealthfolio CUSIP search found ${results.length} results`);
       if (results.length > 0) {
-        const upperSymbol = symbol.toUpperCase();
-        // ONLY return if we find an exact symbol match
-        const exactMatch = results.find(r => {
-          const baseSymbol = r.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
-        if (exactMatch) {
-          debug.log(`[Ticker Resolver] CUSIP exact match: ${exactMatch.symbol}`);
+        const compatibleMatch = results.find(r => areSymbolsCompatible(r.symbol, symbol));
+        if (compatibleMatch) {
+          debug.log(`[Ticker Resolver] CUSIP compatible match: ${compatibleMatch.symbol}`);
           return {
-            yahooTicker: exactMatch.symbol,
+            yahooTicker: compatibleMatch.symbol,
             confidence: "high",
             source: "wealthfolio",
-            name: exactMatch.name || exactMatch.symbol,
+            name: compatibleMatch.name || compatibleMatch.symbol,
           };
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in CUSIP results`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in CUSIP results`);
         }
       }
     } catch (cusipError) {
@@ -273,22 +286,17 @@ async function searchWealthfolioAPI(
       results = await searchTicker(figi);
       debug.log(`[Ticker Resolver] Wealthfolio FIGI search found ${results.length} results`);
       if (results.length > 0) {
-        const upperSymbol = symbol.toUpperCase();
-        // ONLY return if we find an exact symbol match
-        const exactMatch = results.find(r => {
-          const baseSymbol = r.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
-        if (exactMatch) {
-          debug.log(`[Ticker Resolver] FIGI exact match: ${exactMatch.symbol}`);
+        const compatibleMatch = results.find(r => areSymbolsCompatible(r.symbol, symbol));
+        if (compatibleMatch) {
+          debug.log(`[Ticker Resolver] FIGI compatible match: ${compatibleMatch.symbol}`);
           return {
-            yahooTicker: exactMatch.symbol,
+            yahooTicker: compatibleMatch.symbol,
             confidence: "high",
             source: "wealthfolio",
-            name: exactMatch.name || exactMatch.symbol,
+            name: compatibleMatch.name || compatibleMatch.symbol,
           };
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in FIGI results`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in FIGI results`);
         }
       }
     } catch (figiError) {
@@ -309,25 +317,18 @@ async function searchWealthfolioAPI(
           debug.log(`[Ticker Resolver] Symbol result ${idx + 1}: ${r.symbol} (exchange: ${r.exchange || 'N/A'}, score: ${r.score})`);
         });
 
-        const upperSymbol = symbol.toUpperCase();
+        const compatibleMatch = results.find(r => areSymbolsCompatible(r.symbol, symbol));
 
-        // ONLY return if we find an exact symbol match
-        // Otherwise skip and let fallback handle it (prevents SGLN -> IGLN.L type errors)
-        const exactMatch = results.find(r => {
-          const baseSymbol = r.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
-
-        if (exactMatch) {
-          debug.log(`[Ticker Resolver] Found exact symbol match: ${exactMatch.symbol}`);
+        if (compatibleMatch) {
+          debug.log(`[Ticker Resolver] Found compatible symbol match: ${compatibleMatch.symbol}`);
           return {
-            yahooTicker: exactMatch.symbol,
+            yahooTicker: compatibleMatch.symbol,
             confidence: "high",
             source: "wealthfolio",
-            name: exactMatch.name || exactMatch.symbol,
+            name: compatibleMatch.name || compatibleMatch.symbol,
           };
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in search results, will use fallback`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in search results, will use fallback`);
         }
       }
     } catch (symbolError) {
@@ -343,22 +344,17 @@ async function searchWealthfolioAPI(
       results = await searchTicker(description);
       debug.log(`[Ticker Resolver] Wealthfolio description search found ${results.length} results`);
       if (results.length > 0) {
-        const upperSymbol = symbol.toUpperCase();
-        // ONLY return if we find an exact symbol match (description search is unreliable)
-        const exactMatch = results.find(r => {
-          const baseSymbol = r.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
-        if (exactMatch) {
-          debug.log(`[Ticker Resolver] Description exact match: ${exactMatch.symbol}`);
+        const compatibleMatch = results.find(r => areSymbolsCompatible(r.symbol, symbol));
+        if (compatibleMatch) {
+          debug.log(`[Ticker Resolver] Description compatible match: ${compatibleMatch.symbol}`);
           return {
-            yahooTicker: exactMatch.symbol,
+            yahooTicker: compatibleMatch.symbol,
             confidence: "medium", // Lower confidence for description-based matches
             source: "wealthfolio",
-            name: exactMatch.name || exactMatch.symbol,
+            name: compatibleMatch.name || compatibleMatch.symbol,
           };
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in description results`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in description results`);
         }
       }
     } catch (descError) {
@@ -461,17 +457,15 @@ async function searchYahooFinanceByISIN(
       });
 
       // If original symbol is provided, try to find an exact match first
-      // This prevents SGLN -> IGLN.L type errors when ISIN matches a different security
+      // Find compatible symbol match (exact or numeric equivalence for HK stocks)
       if (symbol) {
-        const upperSymbol = symbol.toUpperCase();
-        const exactMatch = quotes.find((q: { symbol: string }) => {
-          const baseSymbol = q.symbol.split('.')[0].toUpperCase();
-          return baseSymbol === upperSymbol;
-        });
+        const compatibleMatch = quotes.find((q: { symbol: string }) =>
+          areSymbolsCompatible(q.symbol, symbol)
+        );
 
-        if (exactMatch) {
-          const ticker = exactMatch.symbol;
-          debug.log(`[Ticker Resolver] Found exact symbol match in Yahoo results: ${ticker}`);
+        if (compatibleMatch) {
+          const ticker = compatibleMatch.symbol;
+          debug.log(`[Ticker Resolver] Found compatible symbol match in Yahoo results: ${ticker} (request: ${symbol})`);
 
           const isValid = await validateYahooTicker(ticker);
           debug.log(`[Ticker Resolver] Ticker ${ticker} validation: ${isValid ? 'VALID' : 'INVALID'}`);
@@ -481,11 +475,11 @@ async function searchYahooFinanceByISIN(
               yahooTicker: ticker,
               confidence: "high",
               source: "yfinance",
-              name: exactMatch.longname || exactMatch.shortname || ticker,
+              name: compatibleMatch.longname || compatibleMatch.shortname || ticker,
             };
           }
         } else {
-          debug.log(`[Ticker Resolver] No exact match for ${symbol} in Yahoo ISIN results, skipping to fallback`);
+          debug.log(`[Ticker Resolver] No compatible match for ${symbol} in Yahoo ISIN results, skipping to fallback`);
           // Don't return first result if it doesn't match - let fallback handle it
           return null;
         }
@@ -590,7 +584,7 @@ function trySymbolWithExchangeSuffix(
 
   // Construct the ticker
   const ticker = symbol.includes('.') ? symbol : `${symbol.toUpperCase()}${resolvedSuffix}`;
-  debug.log(`[Ticker Resolver] Direct resolution: ${symbol} + ${exchange} → ${ticker}`);
+  debug.log(`[Ticker Resolver] Symbol+exchange fallback: ${symbol} + ${exchange} → ${ticker}`);
 
   return {
     yahooTicker: ticker,
@@ -643,18 +637,8 @@ export async function resolveTicker(
     return cached;
   }
 
-  // Tier 1.5: Try direct symbol + exchange suffix resolution FIRST
-  // This is more reliable than ISIN lookups because IBKR ISINs might not match
-  // the expected Yahoo Finance ticker (e.g., SGLN with ISIN for IGLN)
-  const directResult = trySymbolWithExchangeSuffix(symbol, exchange);
-  if (directResult) {
-    debug.log(`[Ticker Resolver] Direct resolution: ${symbol} → ${directResult.yahooTicker}`);
-    await saveToLocalCache(isin, exchange, directResult);
-    return directResult;
-  }
-
   // Tier 2: Wealthfolio search API (uses Rust backend, bypasses CORS)
-  // Now passes full request with CUSIP, FIGI, description
+  // Searches by ISIN, CUSIP, FIGI, symbol, description with compatible symbol matching
   const wealthfolioResult = await searchWealthfolioAPI(request, searchFn);
   if (wealthfolioResult) {
     debug.log(`[Ticker Resolver] Wealthfolio API: ${isin} → ${wealthfolioResult.yahooTicker}`);
@@ -662,7 +646,7 @@ export async function resolveTicker(
     return wealthfolioResult;
   }
 
-  // Tier 3: Yahoo Finance ISIN search (pass symbol for exact match validation)
+  // Tier 3: Yahoo Finance ISIN search (with compatible symbol matching)
   const yahooResult = await searchYahooFinanceByISIN(isin, symbol);
   if (yahooResult) {
     debug.log(`[Ticker Resolver] Yahoo Finance ISIN search: ${isin} → ${yahooResult.yahooTicker}`);
@@ -670,10 +654,18 @@ export async function resolveTicker(
     return yahooResult;
   }
 
-  // Tier 4: Manual selection is handled by the UI component
-  // For now, return minimal fallback with low confidence
+  // Tier 4: Symbol + exchange suffix fallback
+  // Used when ISIN lookup returns no compatible match (e.g., SGLN with IGLN's ISIN)
+  const symbolExchangeResult = trySymbolWithExchangeSuffix(symbol, exchange);
+  if (symbolExchangeResult) {
+    debug.log(`[Ticker Resolver] Symbol+exchange fallback: ${symbol} → ${symbolExchangeResult.yahooTicker}`);
+    await saveToLocalCache(isin, exchange, symbolExchangeResult);
+    return symbolExchangeResult;
+  }
 
-  debug.log(`[Ticker Resolver] Fallback: ${symbol} (ISIN search failed, needs manual resolution)`);
+  // Tier 5: Minimal fallback with low confidence
+  // Manual selection is handled by the UI component
+  debug.log(`[Ticker Resolver] Minimal fallback: ${symbol} (all resolution methods failed)`);
   const fallback = createFallbackTicker(symbol);
   return fallback;
 }
