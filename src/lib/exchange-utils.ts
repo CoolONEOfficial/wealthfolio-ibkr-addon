@@ -16,6 +16,7 @@ export const EXCHANGE_TO_CURRENCY: Record<string, string> = {
   // UK Exchanges
   "LSE": "GBP",
   "LSEIOB1": "GBP",
+  "LSEETF": "GBP",
 
   // European Exchanges
   "EBS": "CHF",      // Swiss (Zurich)

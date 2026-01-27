@@ -32,6 +32,7 @@ const EXCHANGE_TO_SUFFIX: Record<string, string> = {
   // UK
   "LSE": ".L",
   "LSEIOB1": ".L",
+  "LSEETF": ".L",
   // Switzerland
   "EBS": ".SW",
   "SWX": ".SW",
