@@ -562,13 +562,14 @@ const EXCHANGE_TO_SUFFIX: Record<string, string> = {
   // Canada
   "TSX": ".TO",
   "VENTURE": ".V",
-  // US (no suffix needed)
+  // US exchanges (no suffix needed, but listed for documentation)
   "NYSE": "",
   "NASDAQ": "",
   "AMEX": "",
   "ARCA": "",
   "BATS": "",
   "IEX": "",
+  // Unknown exchanges default to empty suffix (US-style)
 };
 
 /**
@@ -584,14 +585,11 @@ function trySymbolWithExchangeSuffix(
 ): TickerResolutionResult | null {
   const suffix = EXCHANGE_TO_SUFFIX[exchange];
 
-  // If we don't know this exchange, skip
-  if (suffix === undefined) {
-    debug.log(`[Ticker Resolver] Unknown exchange ${exchange}, skipping direct resolution`);
-    return null;
-  }
+  // Default to empty suffix for unknown exchanges (treats as US)
+  const resolvedSuffix = suffix ?? "";
 
   // Construct the ticker
-  const ticker = symbol.includes('.') ? symbol : `${symbol.toUpperCase()}${suffix}`;
+  const ticker = symbol.includes('.') ? symbol : `${symbol.toUpperCase()}${resolvedSuffix}`;
   debug.log(`[Ticker Resolver] Direct resolution: ${symbol} + ${exchange} → ${ticker}`);
 
   return {
