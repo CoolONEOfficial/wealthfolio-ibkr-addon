@@ -2,6 +2,27 @@
  * Shared constants for the IBKR Multi-Currency Import addon
  */
 
+// ==================== Routing ====================
+
+/** Addon id as declared in manifest.json */
+export const ADDON_ID = "ibkr-multi-import";
+
+/**
+ * Base route of this addon. Since Wealthfolio 3.x the host only accepts addon
+ * routes inside the addon's own namespace: /addons/<addon-id>[/...]
+ */
+export const ADDON_BASE_ROUTE = `/addons/${ADDON_ID}`;
+
+/** Route ids; must match manifest.json contributes.routes[].id */
+export const IMPORT_ROUTE_ID = "import";
+export const SETTINGS_ROUTE_ID = "settings";
+
+/** Import wizard page (addon root route) */
+export const IMPORT_ROUTE = ADDON_BASE_ROUTE;
+
+/** Flex Query settings page */
+export const SETTINGS_ROUTE = `${ADDON_BASE_ROUTE}/settings`;
+
 // ==================== Timing Constants ====================
 
 /**

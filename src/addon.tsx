@@ -1,10 +1,10 @@
-import React from 'react';
 import type { AddonContext, Account } from '@wealthfolio/addon-sdk';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import IBKRMultiImportPage from './pages/ibkr-multi-import-page';
 import IBKRFlexSettingsPage from './pages/ibkr-flex-settings-page';
-import { setHttpClient } from './lib/flex-query-fetcher';
+import { setNetworkClient } from './lib/network-client';
+import { setTickerCacheStorage } from './lib/ticker-resolver';
 import {
   loadConfigsSafe,
   loadToken,
@@ -12,7 +12,14 @@ import {
 } from './lib/flex-config-storage';
 import { generateAccountNames } from './lib/account-name-generator';
 import { AsyncLock } from './lib/async-lock';
-import { QUERY_STALE_TIME_MS, AUTO_FETCH_DEBOUNCE_MS } from './lib/constants';
+import {
+  QUERY_STALE_TIME_MS,
+  AUTO_FETCH_DEBOUNCE_MS,
+  IMPORT_ROUTE,
+  IMPORT_ROUTE_ID,
+  SETTINGS_ROUTE,
+  SETTINGS_ROUTE_ID,
+} from './lib/constants';
 import {
   isConfigInCooldown,
   createPendingStatus,
@@ -79,62 +86,56 @@ const queryClient = new QueryClient({
  * - Flex Query API integration for automatic fetching and importing
  */
 export function enable(ctx: AddonContext) {
-  // Initialize HTTP client for Flex Query API requests
-  if (ctx.api.http) {
-    setHttpClient(ctx.api.http);
-  }
+  // Since Wealthfolio 3.6 addons run in a sandbox: external HTTP goes through the
+  // host network broker and persistence through the host storage API.
+  setNetworkClient(ctx.api.network);
+  setTickerCacheStorage(ctx.api.storage);
 
   // Cleanup functions to call on disable
-  const cleanupFunctions: (() => void)[] = [];
+  const cleanupFunctions: (() => void)[] = [
+    () => setNetworkClient(null),
+    () => setTickerCacheStorage(null),
+  ];
   // Track if addon has been disabled to prevent adding cleanup functions after disable
   let isDisabled = false;
 
-  // Create lazy-loaded components that match SDK's expected type
-  // React.lazy() returns LazyExoticComponent which is what the router expects
-  const LazyImportPage = React.lazy(() =>
-    Promise.resolve({
-      default: () => <IBKRMultiImportPage ctx={ctx} />,
-    })
+  // Route components: the host mounts them into its single managed React root
+  const ImportPageRoute = () => <IBKRMultiImportPage ctx={ctx} />;
+
+  const SettingsPageRoute = () => (
+    <QueryClientProvider client={queryClient}>
+      <IBKRFlexSettingsPage ctx={ctx} />
+    </QueryClientProvider>
   );
 
-  const LazySettingsPage = React.lazy(() =>
-    Promise.resolve({
-      default: () => (
-        <QueryClientProvider client={queryClient}>
-          <IBKRFlexSettingsPage ctx={ctx} />
-        </QueryClientProvider>
-      ),
-    })
-  );
-
-  // Register the import page route
   ctx.router.add({
-    path: 'activities/import/ibkr-multi',
-    component: LazyImportPage,
+    id: IMPORT_ROUTE_ID,
+    path: IMPORT_ROUTE,
+    title: 'IBKR Import',
+    component: ImportPageRoute,
   });
 
-  // Register the settings page route
   ctx.router.add({
-    path: 'settings/ibkr-flex',
-    component: LazySettingsPage,
+    id: SETTINGS_ROUTE_ID,
+    path: SETTINGS_ROUTE,
+    title: 'IBKR Settings',
+    component: SettingsPageRoute,
   });
 
-  // Add sidebar item for import
   const importSidebarHandle = ctx.sidebar.addItem({
     id: 'ibkr-multi-import',
     label: 'IBKR Import',
-    icon: 'Import',
-    route: '/activities/import/ibkr-multi',
+    icon: 'files',
+    route: IMPORT_ROUTE,
     order: 150,
   });
   cleanupFunctions.push(() => importSidebarHandle.remove());
 
-  // Add sidebar item for settings
   const settingsSidebarHandle = ctx.sidebar.addItem({
     id: 'ibkr-flex-settings',
     label: 'IBKR Settings',
-    icon: 'Settings',
-    route: '/settings/ibkr-flex',
+    icon: 'sliders',
+    route: SETTINGS_ROUTE,
     order: 151,
   });
   cleanupFunctions.push(() => settingsSidebarHandle.remove());
@@ -316,22 +317,28 @@ export function enable(ctx: AddonContext) {
       });
   }
 
-  // Return cleanup function
-  return {
-    disable: () => {
-      // Mark as disabled first to prevent race conditions with async registrations
-      isDisabled = true;
+  // Idempotent cleanup: registered via ctx.onDisable and also returned for hosts
+  // that call the disable callback returned from enable()
+  const disable = () => {
+    if (isDisabled) {
+      return;
+    }
+    // Mark as disabled first to prevent race conditions with async registrations
+    isDisabled = true;
 
-      for (const cleanup of cleanupFunctions) {
-        try {
-          cleanup();
-        } catch (e) {
-          ctx.api.logger?.warn(`IBKR addon cleanup error: ${String(e)}`);
-        }
+    for (const cleanup of cleanupFunctions) {
+      try {
+        cleanup();
+      } catch (e) {
+        ctx.api.logger?.warn(`IBKR addon cleanup error: ${String(e)}`);
       }
-      ctx.api.logger?.info("IBKR addon disabled");
-    },
+    }
+    ctx.api.logger?.info("IBKR addon disabled");
   };
+
+  ctx.onDisable(disable);
+
+  return { disable };
 }
 
 // Default export for different bundling scenarios
