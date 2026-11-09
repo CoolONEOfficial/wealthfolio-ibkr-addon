@@ -11,7 +11,8 @@
  * - GetStatement endpoint: /GetStatement?t={TOKEN}&q={REFERENCE_CODE}&v=3
  */
 
-import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS, FLEX_QUERY_ABSOLUTE_TIMEOUT_MS, MIN_TOKEN_LENGTH, MAX_TOKEN_LENGTH, MAX_QUERY_ID_LENGTH } from "./constants";
+import { FLEX_QUERY_INITIAL_DELAY_MS, FLEX_QUERY_MAX_DELAY_MS, FLEX_QUERY_ABSOLUTE_TIMEOUT_MS, MIN_TOKEN_LENGTH, MAX_TOKEN_LENGTH, MAX_QUERY_ID_LENGTH, FLEX_REQUEST_TIMEOUT_MS } from "./constants";
+import { httpRequest } from "./network-client";
 
 export interface FlexQueryConfig {
   token: string;
@@ -81,28 +82,6 @@ export interface FlexQueryResult {
 }
 
 /**
- * HTTP client interface for making requests
- * Uses addon SDK's HTTP API to bypass CORS
- */
-export interface HttpClient {
-  fetch(
-    url: string,
-    options?: {
-      method?: string;
-      headers?: Record<string, string>;
-      body?: string;
-      timeout_ms?: number;
-    }
-  ): Promise<{
-    status: number;
-    status_text: string;
-    headers: Record<string, string>;
-    body: string;
-    ok: boolean;
-  }>;
-}
-
-/**
  * IBKR Flex API error codes
  */
 export const FLEX_ERROR_CODES: Record<number, string> = {
@@ -126,29 +105,6 @@ export const FLEX_ERROR_CODES: Record<number, string> = {
 
 const FLEX_API_BASE = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService";
 const USER_AGENT = "Wealthfolio/1.0";
-
-// Module-level HTTP client - set via setHttpClient()
-let httpClient: HttpClient | null = null;
-
-/**
- * Set the HTTP client to use for API requests
- * This should be called with ctx.api.http from the addon context
- */
-export function setHttpClient(client: HttpClient): void {
-  httpClient = client;
-}
-
-/**
- * Get the current HTTP client
- */
-function getHttpClient(): HttpClient {
-  if (!httpClient) {
-    throw new Error(
-      "HTTP client not set. Call setHttpClient(ctx.api.http) before using Flex Query functions."
-    );
-  }
-  return httpClient;
-}
 
 /**
  * Sanitize a string from XML response to prevent XSS/injection attacks
@@ -244,18 +200,18 @@ export async function sendFlexRequest(
   const url = `${FLEX_API_BASE}/SendRequest?t=${encodeURIComponent(config.token)}&q=${encodeURIComponent(config.queryId)}&v=3`;
 
   try {
-    const client = getHttpClient();
-    const response = await client.fetch(url, {
+    const response = await httpRequest(url, {
       method: "GET",
       headers: {
         "User-Agent": USER_AGENT,
       },
+      timeoutMs: FLEX_REQUEST_TIMEOUT_MS,
     });
 
     if (!response.ok) {
       return {
         success: false,
-        error: `HTTP error: ${response.status} ${response.status_text}`,
+        error: `HTTP error: ${response.status}`,
       };
     }
 
@@ -304,18 +260,18 @@ export async function getFlexStatement(
   const url = `${FLEX_API_BASE}/GetStatement?t=${encodeURIComponent(config.token)}&q=${encodeURIComponent(referenceCode)}&v=3`;
 
   try {
-    const client = getHttpClient();
-    const response = await client.fetch(url, {
+    const response = await httpRequest(url, {
       method: "GET",
       headers: {
         "User-Agent": USER_AGENT,
       },
+      timeoutMs: FLEX_REQUEST_TIMEOUT_MS,
     });
 
     if (!response.ok) {
       return {
         success: false,
-        error: `HTTP error: ${response.status} ${response.status_text}`,
+        error: `HTTP error: ${response.status}`,
       };
     }
 

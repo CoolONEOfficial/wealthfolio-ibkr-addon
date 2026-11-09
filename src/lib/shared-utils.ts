@@ -111,3 +111,15 @@ export function validateCsvHeaders(headers: string[]): boolean {
     !headers.some((header) => !header || header.trim() === "")
   );
 }
+
+/**
+ * Convert an SDK decimal value (number or decimal string since SDK v3) to a number.
+ * Missing or unparsable values yield 0.
+ */
+export function decimalToNumber(value: number | string | null | undefined): number {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}

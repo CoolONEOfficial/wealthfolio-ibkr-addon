@@ -1,10 +1,11 @@
 {
   "id": "ibkr-multi-import",
   "name": "IBKR Multi-Currency Import",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Import IBKR transactions via CSV files or Flex Query API with automatic multi-currency account creation",
   "author": "Nikolai Trukhin",
-  "sdkVersion": "2.0.0",
+  "sdkVersion": "3.12.0",
+  "minWealthfolioVersion": "3.12.0",
   "main": "dist/addon.js",
   "enabled": true,
   "permissions": [
@@ -30,22 +31,22 @@
       "category": "activities",
       "functions": [
         {
-          "name": "import",
+          "name": "getAll",
           "isDeclared": true,
           "isDetected": false,
           "detectedAt": null
         },
         {
-          "name": "checkImport",
+          "name": "import",
           "isDeclared": true,
           "isDetected": false,
           "detectedAt": null
         }
       ],
-      "purpose": "Import transactions from IBKR CSV files or Flex Query API"
+      "purpose": "Import transactions from IBKR CSV files or Flex Query API and skip duplicates of existing activities"
     },
     {
-      "category": "assets",
+      "category": "market-data",
       "functions": [
         {
           "name": "searchTicker",
@@ -55,24 +56,6 @@
         }
       ],
       "purpose": "Resolve ticker symbols from ISINs"
-    },
-    {
-      "category": "ui",
-      "functions": [
-        {
-          "name": "sidebar.addItem",
-          "isDeclared": true,
-          "isDetected": false,
-          "detectedAt": null
-        },
-        {
-          "name": "router.add",
-          "isDeclared": true,
-          "isDetected": false,
-          "detectedAt": null
-        }
-      ],
-      "purpose": "Display import wizard and settings pages in sidebar"
     },
     {
       "category": "secrets",
@@ -102,7 +85,7 @@
       "category": "events",
       "functions": [
         {
-          "name": "portfolio.onUpdateComplete",
+          "name": "onUpdateComplete",
           "isDeclared": true,
           "isDetected": false,
           "detectedAt": null
@@ -111,41 +94,44 @@
       "purpose": "Trigger automatic Flex Query fetch on portfolio updates"
     },
     {
-      "category": "logger",
+      "category": "network",
       "functions": [
         {
-          "name": "info",
-          "isDeclared": true,
-          "isDetected": false,
-          "detectedAt": null
-        },
-        {
-          "name": "warn",
-          "isDeclared": true,
-          "isDetected": false,
-          "detectedAt": null
-        },
-        {
-          "name": "error",
-          "isDeclared": true,
-          "isDetected": false,
-          "detectedAt": null
-        },
-        {
-          "name": "trace",
+          "name": "request",
           "isDeclared": true,
           "isDetected": false,
           "detectedAt": null
         }
       ],
-      "purpose": "Log addon operations for debugging"
+      "purpose": "Fetch Flex Query statements from IBKR and resolve tickers via Yahoo Finance"
     }
   ],
+  "network": {
+    "allowedHosts": [
+      "ndcdyn.interactivebrokers.com",
+      "query1.finance.yahoo.com"
+    ]
+  },
+  "hostDependencies": {
+    "@tanstack/react-query": "^5.90.0",
+    "@wealthfolio/addon-sdk": "^3.12.0",
+    "@wealthfolio/ui": "^3.12.0",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.7.0"
+  },
   "homepage": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon",
   "repository": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon",
   "bugs": "https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon/issues",
   "license": "MIT",
-  "minWealthfolioVersion": "2.0.0",
-  "keywords": ["ibkr", "interactive-brokers", "import", "multi-currency", "flex-query"],
+  "keywords": [
+    "ibkr",
+    "interactive-brokers",
+    "import",
+    "multi-currency",
+    "flex-query"
+  ],
   "icon": null
 }

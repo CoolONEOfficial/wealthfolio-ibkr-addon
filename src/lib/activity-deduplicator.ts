@@ -10,17 +10,25 @@ import { MAX_DEBUG_LOGS } from "./constants";
 import { extractDividendPerShare } from "./dividend-utils";
 import { formatDateToISO } from "./shared-utils";
 import { debug } from "./debug-logger";
+import type { ActivityFingerprint, DecimalValue } from "../types";
+
+/**
+ * Existing activity as compared during deduplication (date may still be a Date object)
+ */
+type ExistingActivity = Omit<ActivityFingerprint, "activityDate"> & { activityDate: string | Date };
 
 /**
  * Normalize a numeric value for fingerprinting
  * Handles floating point precision issues by rounding to 6 decimal places
  */
-function normalizeNumber(value: number | undefined | null): string {
-  if (value === undefined || value === null || isNaN(value)) {
+function normalizeNumber(value: DecimalValue): string {
+  // SDK v3 delivers decimals as strings; empty strings count as missing
+  const numeric = value === undefined || value === null || value === "" ? NaN : Number(value);
+  if (isNaN(numeric)) {
     return "0.000000";
   }
   // Round to 6 decimal places to handle floating point precision issues
-  return Number(value).toFixed(6);
+  return numeric.toFixed(6);
 }
 
 /**
@@ -81,10 +89,10 @@ interface NormalizedActivityFields {
   date: string | Date | undefined;
   symbol: string;
   activityType: string;
-  quantity?: number;
-  unitPrice?: number;
-  amount?: number;
-  fee?: number;
+  quantity?: DecimalValue;
+  unitPrice?: DecimalValue;
+  amount?: DecimalValue;
+  fee?: DecimalValue;
   currency?: string;
   comment?: string;
 }
@@ -154,7 +162,7 @@ function createFingerprintFromNormalized(fields: NormalizedActivityFields): stri
 export function createActivityFingerprint(activity: ActivityImport): string {
   return createFingerprintFromNormalized({
     date: activity.date,
-    symbol: activity.symbol,
+    symbol: activity.symbol ?? "",
     activityType: activity.activityType,
     quantity: activity.quantity,
     unitPrice: activity.unitPrice,
@@ -169,17 +177,7 @@ export function createActivityFingerprint(activity: ActivityImport): string {
  * Create a fingerprint for an existing activity from the database
  * Uses the same normalization as createActivityFingerprint
  */
-export function createExistingActivityFingerprint(activity: {
-  activityDate: string;
-  assetId: string;
-  activityType: string;
-  quantity: number;
-  unitPrice: number;
-  amount?: number;
-  fee: number;
-  currency: string;
-  comment?: string;
-}): string {
+export function createExistingActivityFingerprint(activity: ExistingActivity): string {
   return createFingerprintFromNormalized({
     date: activity.activityDate,
     symbol: activity.assetId,
@@ -202,17 +200,7 @@ export function createExistingActivityFingerprint(activity: {
  */
 export function filterDuplicateActivities(
   newActivities: ActivityImport[],
-  existingActivities: Array<{
-    activityDate: string | Date;
-    assetId: string;
-    activityType: string;
-    quantity: number;
-    unitPrice: number;
-    amount?: number;
-    fee: number;
-    currency: string;
-    comment?: string;
-  }>
+  existingActivities: ExistingActivity[]
 ): { unique: ActivityImport[]; duplicates: ActivityImport[] } {
   // Build set of existing fingerprints
   const existingFingerprints = new Set<string>();
@@ -322,17 +310,7 @@ export function filterDuplicateActivities(
 export async function deduplicateActivities(
   newActivities: ActivityImport[],
   accountId: string,
-  getExistingActivities: (accountId: string) => Promise<Array<{
-    activityDate: string;
-    assetId: string;
-    activityType: string;
-    quantity: number;
-    unitPrice: number;
-    amount?: number;
-    fee: number;
-    currency: string;
-    comment?: string;
-  }>>
+  getExistingActivities: (accountId: string) => Promise<ActivityFingerprint[]>
 ): Promise<{ toImport: ActivityImport[]; duplicatesSkipped: number }> {
   if (newActivities.length === 0) {
     return { toImport: [], duplicatesSkipped: 0 };

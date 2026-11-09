@@ -12,7 +12,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { splitFXConversions } from '../lib/fx-transaction-splitter';
-import { extractTickersToResolve, resolveTicker } from '../lib/ticker-resolver';
+import { extractTickersToResolve, resolveTicker, setTickerCacheStorage } from '../lib/ticker-resolver';
+import type { TickerCacheStorage } from '../lib/ticker-resolver';
+import { setNetworkClient } from '../lib/network-client';
 import { preprocessIBKRData } from '../lib/ibkr-preprocessor';
 import { convertToActivityImports } from '../lib/activity-converter';
 import { parseFlexQueryCSV } from '../lib/flex-csv-parser';
@@ -38,6 +40,45 @@ const createMockAccount = (currency: string): Account => ({
   totalGainPct: 0,
   dayGainValue: 0,
   dayGainPct: 0,
+});
+
+
+// ============================================================================
+// Host API test doubles (network broker + addon storage)
+// ============================================================================
+
+/** Build a host network broker response carrying a JSON body */
+function jsonResponse(data: unknown, status = 200) {
+  return { status, headers: {}, body: JSON.stringify(data) };
+}
+
+/** Register a mocked host network broker and return its request mock */
+function mockNetwork() {
+  const request = vi.fn();
+  setNetworkClient({ request });
+  return request;
+}
+
+/** Ticker cache storage backed by a plain record, registered with the resolver */
+function mockTickerCacheStorage(values: Record<string, string>): TickerCacheStorage {
+  const storage: TickerCacheStorage = {
+    get: vi.fn(async (key: string) => (key in values ? values[key] : null)),
+    set: vi.fn(async (key: string, value: string) => { values[key] = value; }),
+    delete: vi.fn(async (key: string) => { delete values[key]; }),
+  };
+  setTickerCacheStorage(storage);
+  return storage;
+}
+
+beforeEach(() => {
+  // Fresh in-memory ticker cache and no network unless a test mocks it
+  setTickerCacheStorage(null);
+  setNetworkClient({ request: vi.fn().mockRejectedValue(new Error('Network not mocked')) });
+});
+
+afterEach(() => {
+  setTickerCacheStorage(null);
+  setNetworkClient(null);
 });
 
 // ============================================================================
@@ -310,15 +351,6 @@ describe('Ticker Resolver Edge Cases', () => {
   });
 
   describe('resolveTicker with search function', () => {
-    beforeEach(() => {
-      // Clear localStorage cache
-      try {
-        localStorage.removeItem('ibkr_ticker_cache');
-      } catch (e) {
-        // Ignore if localStorage not available
-      }
-    });
-
     it('should return fallback when search returns no results', async () => {
       // Search function returns empty array
       const emptySearchFn = async () => [];
@@ -422,36 +454,11 @@ describe('Ticker Resolver Edge Cases', () => {
   });
 
   describe('cache corruption recovery', () => {
-    let originalLocalStorage: Storage;
     let mockStorage: Record<string, string>;
 
     beforeEach(() => {
-      originalLocalStorage = globalThis.localStorage;
       mockStorage = {};
-
-      // Mock localStorage
-      const storageMock: Storage = {
-        getItem: vi.fn((key: string) => mockStorage[key] || null),
-        setItem: vi.fn((key: string, value: string) => { mockStorage[key] = value; }),
-        removeItem: vi.fn((key: string) => { delete mockStorage[key]; }),
-        clear: vi.fn(() => { mockStorage = {}; }),
-        length: 0,
-        key: vi.fn(() => null),
-      };
-
-      Object.defineProperty(globalThis, 'localStorage', {
-        value: storageMock,
-        writable: true,
-        configurable: true,
-      });
-    });
-
-    afterEach(() => {
-      Object.defineProperty(globalThis, 'localStorage', {
-        value: originalLocalStorage,
-        writable: true,
-        configurable: true,
-      });
+      mockTickerCacheStorage(mockStorage);
     });
 
     it('should handle corrupted cache JSON gracefully', async () => {
@@ -578,48 +585,60 @@ describe('Ticker Resolver Edge Cases', () => {
     });
   });
 
-  describe('Yahoo Finance API fallback', () => {
-    let originalFetch: typeof global.fetch;
-    let mockStorage: Record<string, string>;
+  describe('ticker cache storage', () => {
+    const request = { isin: 'US5949181045', symbol: 'MSFT', exchange: 'NASDAQ', currency: 'USD' };
 
-    beforeEach(() => {
-      originalFetch = global.fetch;
-      mockStorage = {};
+    it('should cache resolutions in memory when no host storage is registered', async () => {
+      const searchFn = vi.fn().mockResolvedValue([{ symbol: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' }]);
 
-      // Mock localStorage
-      const storageMock: Storage = {
-        getItem: vi.fn((key: string) => mockStorage[key] || null),
-        setItem: vi.fn((key: string, value: string) => { mockStorage[key] = value; }),
-        removeItem: vi.fn((key: string) => { delete mockStorage[key]; }),
-        clear: vi.fn(() => { mockStorage = {}; }),
-        length: 0,
-        key: vi.fn(() => null),
-      };
+      const first = await resolveTicker(request, { searchFn });
+      const second = await resolveTicker(request, { searchFn });
 
-      Object.defineProperty(globalThis, 'localStorage', {
-        value: storageMock,
-        writable: true,
-        configurable: true,
-      });
+      expect(first.source).not.toBe('cache');
+      expect(second.source).toBe('cache');
+      expect(second.yahooTicker).toBe('MSFT');
+      expect(searchFn).toHaveBeenCalledTimes(1);
     });
 
-    afterEach(() => {
-      global.fetch = originalFetch;
+    it('should start with an empty cache after the storage is reset', async () => {
+      const searchFn = vi.fn().mockResolvedValue([{ symbol: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' }]);
+      await resolveTicker(request, { searchFn });
+
+      setTickerCacheStorage(null);
+      const result = await resolveTicker(request, { searchFn });
+
+      expect(result.source).not.toBe('cache');
+      expect(searchFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('should keep resolving when the host storage fails', async () => {
+      setTickerCacheStorage({
+        get: vi.fn().mockRejectedValue(new Error('storage unavailable')),
+        set: vi.fn().mockRejectedValue(new Error('storage unavailable')),
+        delete: vi.fn().mockRejectedValue(new Error('storage unavailable')),
+      });
+      const searchFn = vi.fn().mockResolvedValue([{ symbol: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' }]);
+
+      const result = await resolveTicker(request, { searchFn });
+
+      expect(result.yahooTicker).toBe('MSFT');
+    });
+  });
+
+  describe('Yahoo Finance API fallback', () => {
+    let networkRequest: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      mockTickerCacheStorage({});
     });
 
     it('should fall back to Yahoo Finance when Wealthfolio search returns nothing', async () => {
-      // Mock fetch for Yahoo Finance search and validation
-      global.fetch = vi.fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            quotes: [{ symbol: 'TEST.L', longname: 'Test Stock', shortname: 'Test' }],
-          }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ chart: { result: [{}] } }), // No error = valid ticker
-        });
+      // Mock network broker for Yahoo Finance search and validation
+      networkRequest = mockNetwork()
+        .mockResolvedValueOnce(jsonResponse({
+          quotes: [{ symbol: 'TEST.L', longname: 'Test Stock', shortname: 'Test' }],
+        }))
+        .mockResolvedValueOnce(jsonResponse({ chart: { result: [{}] } })); // No error = valid ticker
 
       // Empty search function - forces fallback to Yahoo Finance
       const emptySearchFn = async () => [];
@@ -637,15 +656,12 @@ describe('Ticker Resolver Edge Cases', () => {
       expect(result.yahooTicker).toBe('TEST.L');
       expect(result.confidence).toBe('high');
       expect(result.source).toBe('yfinance');
-      expect(global.fetch).toHaveBeenCalled();
+      expect(networkRequest).toHaveBeenCalled();
     });
 
     it('should return fallback when Yahoo Finance search fails', async () => {
-      // Mock fetch to return error
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-      });
+      // Mock network broker to return an HTTP error
+      networkRequest = mockNetwork().mockResolvedValue({ status: 500, headers: {}, body: '' });
 
       const emptySearchFn = async () => [];
 
@@ -666,10 +682,7 @@ describe('Ticker Resolver Edge Cases', () => {
     });
 
     it('should return fallback when Yahoo Finance returns no quotes', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ quotes: [] }),
-      });
+      networkRequest = mockNetwork().mockResolvedValue(jsonResponse({ quotes: [] }));
 
       const emptySearchFn = async () => [];
 
@@ -691,17 +704,11 @@ describe('Ticker Resolver Edge Cases', () => {
 
     it('should return fallback when ticker validation fails', async () => {
       // Search succeeds but validation fails
-      global.fetch = vi.fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            quotes: [{ symbol: 'INVALID', longname: 'Invalid Stock' }],
-          }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ chart: { error: { code: 'Not Found' } } }),
-        });
+      networkRequest = mockNetwork()
+        .mockResolvedValueOnce(jsonResponse({
+          quotes: [{ symbol: 'INVALID', longname: 'Invalid Stock' }],
+        }))
+        .mockResolvedValueOnce(jsonResponse({ chart: { error: { code: 'Not Found' } } }));
 
       const emptySearchFn = async () => [];
 
@@ -721,8 +728,8 @@ describe('Ticker Resolver Edge Cases', () => {
       expect(result.yahooTicker).toBe('INVALID');
     });
 
-    it('should handle fetch network error gracefully', async () => {
-      global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+    it('should handle network error gracefully', async () => {
+      networkRequest = mockNetwork().mockRejectedValue(new Error('Network error'));
 
       const emptySearchFn = async () => [];
 
@@ -742,10 +749,8 @@ describe('Ticker Resolver Edge Cases', () => {
       expect(result.yahooTicker).toBe('NETERR.L');
     });
 
-    it('should handle fetch timeout (AbortError) gracefully', async () => {
-      const abortError = new Error('Aborted');
-      abortError.name = 'AbortError';
-      global.fetch = vi.fn().mockRejectedValue(abortError);
+    it('should handle network broker timeout gracefully', async () => {
+      networkRequest = mockNetwork().mockRejectedValue(new Error('Request timed out'));
 
       const emptySearchFn = async () => [];
 
@@ -766,10 +771,7 @@ describe('Ticker Resolver Edge Cases', () => {
     });
 
     it('should handle malformed JSON response', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => { throw new Error('Invalid JSON'); },
-      });
+      networkRequest = mockNetwork().mockResolvedValue({ status: 200, headers: {}, body: '{ invalid json' });
 
       const emptySearchFn = async () => [];
 
@@ -791,7 +793,7 @@ describe('Ticker Resolver Edge Cases', () => {
 
     it('should skip Yahoo Finance search when no ISIN provided', async () => {
       // Should go directly to symbol+exchange fallback without calling Yahoo Finance
-      global.fetch = vi.fn();
+      networkRequest = mockNetwork();
 
       const emptySearchFn = async () => [];
 
@@ -1481,15 +1483,6 @@ describe('Currency Detector Edge Cases', () => {
 
 describe('ADR/OTC Stock Handling', () => {
   describe('HESAY (PINK exchange) processing', () => {
-    beforeEach(() => {
-      // Clear localStorage cache before each test
-      try {
-        localStorage.removeItem('ibkr_ticker_cache');
-      } catch (e) {
-        // Ignore if localStorage not available
-      }
-    });
-
     it('should preprocess HESAY BUY transactions correctly', () => {
       const hesayBuy = {
         LevelOfDetail: 'EXECUTION',  // Real value from CSV
@@ -1551,11 +1544,8 @@ describe('ADR/OTC Stock Handling', () => {
     });
 
     it('should fallback to HESAY for PINK exchange when search returns empty', async () => {
-      // Mock fetch to return empty results from Yahoo Finance
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ quotes: [] }),
-      });
+      // Mock network broker to return empty results from Yahoo Finance
+      mockNetwork().mockResolvedValue(jsonResponse({ quotes: [] }));
 
       const emptySearchFn = async () => [];
 

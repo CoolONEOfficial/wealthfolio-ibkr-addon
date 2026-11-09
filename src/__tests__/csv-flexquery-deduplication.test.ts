@@ -19,6 +19,8 @@ import {
   createExistingActivityFingerprint,
 } from "../lib/activity-deduplicator";
 import type { ActivityImport } from "@wealthfolio/addon-sdk";
+import type { ActivityFingerprint } from "../types";
+import { decimalToNumber } from "../lib/shared-utils";
 
 // Path to test CSV files
 const CSV_DIR = path.join(__dirname, "../../../../ibkrtogetherisa");
@@ -28,29 +30,21 @@ const CSV2_PATH = path.join(CSV_DIR, "plain2.csv");
 /**
  * Simulates how the database stores activities
  * The backend stores quantity=0 and unitPrice=0 for cash transactions
+ * and (since SDK v3) returns all decimals as strings
  */
-function simulateDatabaseStorage(activity: ActivityImport): {
-  activityDate: string;
-  assetId: string;
-  activityType: string;
-  quantity: number;
-  unitPrice: number;
-  amount: number;
-  fee: number;
-  currency: string;
-  comment?: string;
-} {
+function simulateDatabaseStorage(activity: ActivityImport): ActivityFingerprint {
   const isTrade = activity.activityType === "BUY" || activity.activityType === "SELL";
 
   return {
     activityDate: typeof activity.date === "string" ? activity.date : activity.date?.toISOString() || "",
-    assetId: activity.symbol,
+    assetId: activity.symbol ?? "",
     activityType: activity.activityType,
-    // Backend stores quantity and unitPrice as 0 for cash transactions
-    quantity: isTrade ? (activity.quantity || 0) : 0,
-    unitPrice: isTrade ? (activity.unitPrice || 0) : 0,
-    amount: activity.amount || 0,
-    fee: activity.fee || 0,
+    // Backend stores quantity and unitPrice as 0 for cash transactions.
+    // Since SDK v3 the host returns decimals as strings.
+    quantity: isTrade ? String(decimalToNumber(activity.quantity)) : "0",
+    unitPrice: isTrade ? String(decimalToNumber(activity.unitPrice)) : "0",
+    amount: String(decimalToNumber(activity.amount)),
+    fee: String(decimalToNumber(activity.fee)),
     currency: activity.currency || "",
     comment: activity.comment, // Include comment for dividend per-share fingerprinting
   };
@@ -233,8 +227,8 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       const storedActivity = simulateDatabaseStorage(importActivity);
 
       // For DIVIDEND, backend stores quantity=0, unitPrice=0
-      expect(storedActivity.quantity).toBe(0);
-      expect(storedActivity.unitPrice).toBe(0);
+      expect(storedActivity.quantity).toBe("0");
+      expect(storedActivity.unitPrice).toBe("0");
 
       const importFingerprint = createActivityFingerprint(importActivity);
       const storedFingerprint = createExistingActivityFingerprint(storedActivity);
@@ -263,8 +257,8 @@ describe("CSV vs Flex Query Deduplication Integration", () => {
       const storedActivity = simulateDatabaseStorage(importActivity);
 
       // For TRANSFER_IN, backend stores quantity=0, unitPrice=0
-      expect(storedActivity.quantity).toBe(0);
-      expect(storedActivity.unitPrice).toBe(0);
+      expect(storedActivity.quantity).toBe("0");
+      expect(storedActivity.unitPrice).toBe("0");
 
       const importFingerprint = createActivityFingerprint(importActivity);
       const storedFingerprint = createExistingActivityFingerprint(storedActivity);

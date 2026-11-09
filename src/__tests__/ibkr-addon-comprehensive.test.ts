@@ -20,6 +20,7 @@ import { detectCurrenciesFromIBKR } from '../lib/currency-detector';
 import { preprocessIBKRData } from '../lib/ibkr-preprocessor';
 import { convertToActivityImports } from '../lib/activity-converter';
 import { normalizeNumericValue } from '../lib/validation-utils';
+import { decimalToNumber } from '../lib/shared-utils';
 
 // ============================================================================
 // SECTION 1: CSV PARSING EDGE CASES (20 tests)
@@ -2235,7 +2236,7 @@ describe('Real-World Edge Cases', () => {
       const { activities } = await convertToActivityImports(rows, accountPreviews);
 
       expect(activities).toHaveLength(3);
-      expect(activities.reduce((sum, a) => sum + a.quantity, 0)).toBe(100);
+      expect(activities.reduce((sum, a) => sum + decimalToNumber(a.quantity), 0)).toBe(100);
     });
   });
 

@@ -2,21 +2,22 @@
  * Error Handling Tests
  *
  * Tests critical error paths that could cause failures in production:
- * - HTTP timeout in fetchFlexQuery
+ * - Absolute timeout in fetchFlexQuery (requests via host network broker)
  * - Malformed XML response from IBKR API
  * - Credential validation
  * - Async lock error handling
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fetchFlexQuery, setHttpClient, validateFlexToken, validateQueryId, testFlexConnection } from "../lib/flex-query-fetcher";
+import { fetchFlexQuery, validateFlexToken, validateQueryId, testFlexConnection } from "../lib/flex-query-fetcher";
+import { setNetworkClient } from "../lib/network-client";
 import { AsyncLock, withLock } from "../lib/async-lock";
 
 describe("Error Handling", () => {
   describe("Flex Query Fetcher", () => {
     beforeEach(() => {
-      // Reset HTTP client before each test
-      setHttpClient(undefined as any);
+      // Reset network client before each test
+      setNetworkClient(null);
     });
 
     describe("validateFlexToken", () => {
@@ -78,44 +79,40 @@ describe("Error Handling", () => {
     });
 
     describe("fetchFlexQuery error handling", () => {
-      it("should fail gracefully when no HTTP client is set", async () => {
+      it("should fail gracefully when no network client is set", async () => {
         const result = await fetchFlexQuery({
           token: "validtoken12345678",
           queryId: "123456",
         });
 
         expect(result.success).toBe(false);
-        expect(result.error).toContain("HTTP client not set");
+        expect(result.error).toContain("Network client not set");
       });
 
       it("should timeout after absolute timeout period", async () => {
         // Mock: First call (SendRequest) succeeds with reference code
         // Subsequent calls (GetStatement) return "in progress" to trigger polling
         let callCount = 0;
-        const mockHttpClient = {
-          fetch: vi.fn().mockImplementation(() => {
+        const mockNetworkClient = {
+          request: vi.fn().mockImplementation(() => {
             callCount++;
             if (callCount === 1) {
               // SendRequest - return success with reference code
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: "<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>",
               });
             }
             // GetStatement - always return "in progress" to force polling until timeout
             return Promise.resolve({
-              ok: true,
               status: 200,
-              status_text: "OK",
               headers: {},
               body: "<FlexStatementResponse><Status>Warn</Status><ErrorCode>1003</ErrorCode><ErrorMessage>Statement generation in progress</ErrorMessage></FlexStatementResponse>",
             });
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery(
           { token: "validtoken12345678", queryId: "123456" },
@@ -131,13 +128,14 @@ describe("Error Handling", () => {
       }, 10000); // Test timeout of 10s
 
       it("should handle malformed XML response", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
-            text: () => Promise.resolve("not xml at all"),
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
+            status: 200,
+            headers: {},
+            body: "not xml at all",
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery({
           token: "validtoken12345678",
@@ -148,14 +146,14 @@ describe("Error Handling", () => {
       });
 
       it("should handle HTTP error status", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: false,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 500,
-            statusText: "Internal Server Error",
+            headers: {},
+            body: "Internal Server Error",
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery({
           token: "validtoken12345678",
@@ -167,10 +165,10 @@ describe("Error Handling", () => {
       });
 
       it("should handle network error", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockRejectedValue(new Error("Network error")),
+        const mockNetworkClient = {
+          request: vi.fn().mockRejectedValue(new Error("Network error")),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery({
           token: "validtoken12345678",
@@ -183,15 +181,13 @@ describe("Error Handling", () => {
 
       it("should retry on error code 1003 (generation in progress)", async () => {
         let callCount = 0;
-        const mockHttpClient = {
-          fetch: vi.fn().mockImplementation(() => {
+        const mockNetworkClient = {
+          request: vi.fn().mockImplementation(() => {
             callCount++;
             if (callCount === 1) {
               // SendRequest - return success
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
               });
@@ -199,24 +195,20 @@ describe("Error Handling", () => {
             if (callCount === 2) {
               // First GetStatement - return 1003 (in progress)
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: `<FlexStatementResponse><Status>Warn</Status><ErrorCode>1003</ErrorCode><ErrorMessage>Statement generation in progress</ErrorMessage></FlexStatementResponse>`,
               });
             }
             // Second GetStatement - return success with CSV
             return Promise.resolve({
-              ok: true,
               status: 200,
-              status_text: "OK",
               headers: {},
               body: `<FlexQueryResponse><FlexStatements><FlexStatement>Symbol,Quantity\nAAPL,10</FlexStatement></FlexStatements></FlexQueryResponse>`,
             });
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery(
           { token: "validtoken12345678", queryId: "123456" },
@@ -230,15 +222,13 @@ describe("Error Handling", () => {
 
       it("should retry on error code 1019 (rate limited)", async () => {
         let callCount = 0;
-        const mockHttpClient = {
-          fetch: vi.fn().mockImplementation(() => {
+        const mockNetworkClient = {
+          request: vi.fn().mockImplementation(() => {
             callCount++;
             if (callCount === 1) {
               // SendRequest - return success
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
               });
@@ -246,24 +236,20 @@ describe("Error Handling", () => {
             if (callCount === 2) {
               // First GetStatement - return 1019 (rate limited)
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: `<FlexStatementResponse><Status>Warn</Status><ErrorCode>1019</ErrorCode><ErrorMessage>Rate limited</ErrorMessage></FlexStatementResponse>`,
               });
             }
             // Second GetStatement - return success
             return Promise.resolve({
-              ok: true,
               status: 200,
-              status_text: "OK",
               headers: {},
               body: `<FlexQueryResponse><FlexStatements><FlexStatement>Symbol,Quantity\nAAPL,10</FlexStatement></FlexStatements></FlexQueryResponse>`,
             });
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery(
           { token: "validtoken12345678", queryId: "123456" },
@@ -276,30 +262,26 @@ describe("Error Handling", () => {
 
       it("should fail on non-retryable error code", async () => {
         let callCount = 0;
-        const mockHttpClient = {
-          fetch: vi.fn().mockImplementation(() => {
+        const mockNetworkClient = {
+          request: vi.fn().mockImplementation(() => {
             callCount++;
             if (callCount === 1) {
               // SendRequest - return success
               return Promise.resolve({
-                ok: true,
                 status: 200,
-                status_text: "OK",
                 headers: {},
                 body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
               });
             }
             // GetStatement - return non-retryable error (e.g., 1016 = statement not found)
             return Promise.resolve({
-              ok: true,
               status: 200,
-              status_text: "OK",
               headers: {},
               body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1016</ErrorCode><ErrorMessage>Statement not found</ErrorMessage></FlexStatementResponse>`,
             });
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await fetchFlexQuery(
           { token: "validtoken12345678", queryId: "123456" },
@@ -314,20 +296,18 @@ describe("Error Handling", () => {
 
     describe("testFlexConnection", () => {
       beforeEach(() => {
-        setHttpClient(undefined as any);
+        setNetworkClient(null);
       });
 
       it("should return success when SendRequest succeeds", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Success</Status><ReferenceCode>12345</ReferenceCode></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",
@@ -342,16 +322,14 @@ describe("Error Handling", () => {
       });
 
       it("should return error for invalid token (1015)", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1015</ErrorCode><ErrorMessage>Invalid token</ErrorMessage></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",
@@ -366,16 +344,14 @@ describe("Error Handling", () => {
       });
 
       it("should return error for expired token (1012)", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1012</ErrorCode><ErrorMessage>Token expired</ErrorMessage></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",
@@ -390,16 +366,14 @@ describe("Error Handling", () => {
       });
 
       it("should return error for invalid Query ID (1014)", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1014</ErrorCode><ErrorMessage>Invalid query ID</ErrorMessage></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",
@@ -414,16 +388,14 @@ describe("Error Handling", () => {
       });
 
       it("should return error for IP not allowed (1013)", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>1013</ErrorCode><ErrorMessage>IP not allowed</ErrorMessage></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",
@@ -438,16 +410,14 @@ describe("Error Handling", () => {
       });
 
       it("should return generic error for unknown error codes", async () => {
-        const mockHttpClient = {
-          fetch: vi.fn().mockResolvedValue({
-            ok: true,
+        const mockNetworkClient = {
+          request: vi.fn().mockResolvedValue({
             status: 200,
-            status_text: "OK",
             headers: {},
             body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>9999</ErrorCode><ErrorMessage>Unknown error</ErrorMessage></FlexStatementResponse>`,
           }),
         };
-        setHttpClient(mockHttpClient);
+        setNetworkClient(mockNetworkClient);
 
         const result = await testFlexConnection({
           id: "test",

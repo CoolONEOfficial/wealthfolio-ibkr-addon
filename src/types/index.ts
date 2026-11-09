@@ -87,13 +87,18 @@ export interface ActivityFingerprint {
   activityDate: string;
   assetId: string;
   activityType: string;
-  quantity: number;
-  unitPrice: number;
-  amount?: number;
-  fee: number;
+  quantity: DecimalValue;
+  unitPrice: DecimalValue;
+  amount?: DecimalValue;
+  fee: DecimalValue;
   currency: string;
   comment?: string;
 }
+
+/**
+ * Numeric value as delivered by the Wealthfolio SDK (v3+ returns decimals as strings)
+ */
+export type DecimalValue = number | string | null | undefined;
 
 /**
  * Progress indicator for async operations
