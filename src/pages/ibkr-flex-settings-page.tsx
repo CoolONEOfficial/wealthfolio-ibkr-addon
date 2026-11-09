@@ -19,10 +19,15 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  EmptyPlaceholder,
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
   Skeleton,
 } from "@wealthfolio/ui";
-import { Plus, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Plus, Eye, EyeOff, Loader2, Settings } from "lucide-react";
 import type { AddonContext, Account } from "@wealthfolio/addon-sdk";
 import { FlexConfigItem } from "../components/flex-config-item";
 import { FlexConfigModal } from "../components/flex-config-modal";
@@ -233,17 +238,23 @@ const IBKRFlexSettingsPage: React.FC<IBKRFlexSettingsPageProps> = ({ ctx }) => {
                 ))}
               </div>
             ) : (
-              <EmptyPlaceholder>
-                <EmptyPlaceholder.Icon name="Settings" />
-                <EmptyPlaceholder.Title>No queries configured</EmptyPlaceholder.Title>
-                <EmptyPlaceholder.Description>
-                  Add a Flex Query configuration to automatically fetch IBKR transactions.
-                </EmptyPlaceholder.Description>
-                <Button onClick={handleAddConfig}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Query
-                </Button>
-              </EmptyPlaceholder>
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Settings />
+                  </EmptyMedia>
+                  <EmptyTitle>No queries configured</EmptyTitle>
+                  <EmptyDescription>
+                    Add a Flex Query configuration to automatically fetch IBKR transactions.
+                  </EmptyDescription>
+                </EmptyHeader>
+                <EmptyContent>
+                  <Button onClick={handleAddConfig}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add Query
+                  </Button>
+                </EmptyContent>
+              </Empty>
             )}
           </div>
         </div>
