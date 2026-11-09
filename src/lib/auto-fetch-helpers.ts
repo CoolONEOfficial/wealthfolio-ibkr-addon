@@ -10,6 +10,7 @@ import { FETCH_COOLDOWN_MS, MS_PER_HOUR } from "./constants";
 import { formatDateToISO, getErrorMessage } from "./shared-utils";
 import { debug } from "./debug-logger";
 import type { ActivityDetails } from "@wealthfolio/addon-sdk";
+import type { ActivityFingerprint } from "../types";
 
 /**
  * Check if a config is still in cooldown period
@@ -55,17 +56,7 @@ export function isConfigInCooldown(lastFetchTime: string | undefined): {
  */
 export function createActivityFingerprintGetter(
   activitiesApi: { getAll: (accountId: string) => Promise<ActivityDetails[]> }
-): (accountId: string) => Promise<{
-  activityDate: string;
-  assetId: string;
-  activityType: string;
-  quantity: number;
-  unitPrice: number;
-  amount?: number;
-  fee: number;
-  currency: string;
-  comment?: string;
-}[]> {
+): (accountId: string) => Promise<ActivityFingerprint[]> {
   return async (accountId: string) => {
     const activities = await activitiesApi.getAll(accountId);
     return activities.map((a) => ({

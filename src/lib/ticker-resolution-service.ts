@@ -114,7 +114,7 @@ function addExchangeSuffix(symbol: string, exchange: string): string {
  *
  * @param data - Array of parsed IBKR CSV data
  * @param onProgress - Progress callback
- * @param searchFn - Search function from addon context (ctx.api.marketData.searchTicker)
+ * @param searchFn - Search function from addon context (ctx.api.market.searchTicker)
  */
 export async function resolveTickersFromIBKR(
   data: ProcessedIBKRRow[],

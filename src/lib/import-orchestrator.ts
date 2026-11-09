@@ -7,7 +7,7 @@
 
 import { debug } from "./debug-logger";
 import { getErrorMessage, formatDateToISO } from "./shared-utils";
-import type { Account, HostAPI, ActivityImport, QuoteSummary } from "@wealthfolio/addon-sdk";
+import type { Account, HostAPI, ActivityImport, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import type { AccountPreview, TransactionGroup, ActivityFingerprint, ConversionError } from "../types";
 import { preprocessIBKRData } from "./ibkr-preprocessor";
 import { resolveTickersFromIBKR } from "./ticker-resolution-service";
@@ -18,7 +18,7 @@ import type { CsvRowData } from "../presets/types";
 
 type AccountsAPI = HostAPI["accounts"];
 type ActivitiesAPI = HostAPI["activities"];
-type MarketSearchFn = ((query: string) => Promise<QuoteSummary[]>) | undefined;
+type MarketSearchFn = ((query: string) => Promise<SymbolSearchResult[]>) | undefined;
 type ProgressCallback = (current: number, total: number) => void;
 
 /**
@@ -90,7 +90,7 @@ export async function processAndResolveData(
   const adaptedSearchFn = searchFn
     ? async (query: string) => {
         const results = await searchFn(query);
-        // Map QuoteSummary[] to TickerSearchResult[] by spreading to add index signature compatibility
+        // Map SymbolSearchResult[] to TickerSearchResult[] by spreading to add index signature compatibility
         return results.map((r) => ({ ...r } as { symbol: string; name?: string; exchange?: string; score?: number; [key: string]: unknown }));
       }
     : undefined;

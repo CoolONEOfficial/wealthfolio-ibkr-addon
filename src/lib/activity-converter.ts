@@ -11,8 +11,7 @@ import { MAX_FX_RATE } from "./constants";
  */
 const VALID_ACTIVITY_TYPES = new Set<ActivityType>([
   "BUY", "SELL", "DIVIDEND", "INTEREST", "DEPOSIT", "WITHDRAWAL",
-  "ADD_HOLDING", "REMOVE_HOLDING", "TRANSFER_IN", "TRANSFER_OUT",
-  "FEE", "TAX", "SPLIT"
+  "TRANSFER_IN", "TRANSFER_OUT", "FEE", "TAX", "SPLIT"
 ]);
 
 /**

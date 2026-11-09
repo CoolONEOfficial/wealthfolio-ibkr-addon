@@ -7,6 +7,7 @@ import {
   getErrorMessage,
   formatDateToISO,
   validateCsvHeaders,
+  decimalToNumber,
 } from "../lib/shared-utils";
 
 describe("Shared Utils", () => {
@@ -269,6 +270,29 @@ describe("Shared Utils", () => {
         ];
         expect(validateCsvHeaders(headers)).toBe(true);
       });
+    });
+  });
+
+  describe("decimalToNumber", () => {
+    it("passes numbers through", () => {
+      expect(decimalToNumber(1.5)).toBe(1.5);
+      expect(decimalToNumber(-2)).toBe(-2);
+    });
+
+    it("parses SDK v3 decimal strings", () => {
+      expect(decimalToNumber("150.500000")).toBe(150.5);
+      expect(decimalToNumber("-0.25")).toBe(-0.25);
+    });
+
+    it("returns 0 for missing values", () => {
+      expect(decimalToNumber(undefined)).toBe(0);
+      expect(decimalToNumber(null)).toBe(0);
+      expect(decimalToNumber("")).toBe(0);
+    });
+
+    it("returns 0 for unparsable values", () => {
+      expect(decimalToNumber("abc")).toBe(0);
+      expect(decimalToNumber(Number.POSITIVE_INFINITY)).toBe(0);
     });
   });
 });

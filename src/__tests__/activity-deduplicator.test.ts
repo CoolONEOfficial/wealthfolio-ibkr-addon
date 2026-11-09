@@ -235,6 +235,52 @@ describe("Activity Deduplicator", () => {
 
       expect(createExistingActivityFingerprint(existingActivity)).toBe(createActivityFingerprint(newActivity));
     });
+
+    it("should match SDK v3 activities that carry decimals as strings", () => {
+      // Wealthfolio 3.x returns quantity/unitPrice/amount/fee as decimal strings
+      const existingActivity = {
+        activityDate: "2024-01-15",
+        assetId: "AAPL",
+        activityType: "BUY",
+        quantity: "10",
+        unitPrice: "150.500000",
+        currency: "USD",
+        fee: "1",
+        amount: "1505.00",
+      };
+
+      const newActivity: ActivityImport = {
+        accountId: "acc1",
+        date: "2024-01-15",
+        symbol: "AAPL",
+        activityType: "BUY",
+        quantity: 10,
+        unitPrice: 150.5,
+        currency: "USD",
+        fee: 1,
+        amount: 1505,
+        isDraft: false,
+        isValid: true,
+      };
+
+      expect(createExistingActivityFingerprint(existingActivity)).toBe(createActivityFingerprint(newActivity));
+    });
+
+    it("should treat null and empty decimal strings as zero", () => {
+      const withNulls = {
+        activityDate: "2024-01-15",
+        assetId: "$CASH-USD",
+        activityType: "DEPOSIT",
+        quantity: null,
+        unitPrice: "",
+        currency: "USD",
+        fee: null,
+        amount: "100",
+      };
+      const withZeros = { ...withNulls, quantity: 0, unitPrice: 0, fee: "0" };
+
+      expect(createExistingActivityFingerprint(withNulls)).toBe(createExistingActivityFingerprint(withZeros));
+    });
   });
 
   describe("filterDuplicateActivities", () => {
