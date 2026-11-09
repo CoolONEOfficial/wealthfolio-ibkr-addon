@@ -14,6 +14,9 @@ A comprehensive import solution for Interactive Brokers (IBKR) activity statemen
 
 ## Installation
 
+> **Requires Wealthfolio 3.12 or newer.** Version 1.1.0 targets the sandboxed addon
+> runtime (Addon SDK 3.12). Older Wealthfolio versions need addon version 1.0.x.
+
 ### From GitHub Releases
 
 1. Go to the [Releases](https://github.com/CoolONEOfficial/wealthfolio-ibkr-addon/releases) page
@@ -32,7 +35,7 @@ A comprehensive import solution for Interactive Brokers (IBKR) activity statemen
 
 ### CSV Import
 
-1. Navigate to **Activities > IBKR Multi-Import** from the sidebar
+1. Open **IBKR Import** from the sidebar (route `/addons/ibkr-multi-import`)
 2. Select "Import from CSV Files"
 3. Enter an account group name (e.g., "TFSA", "Trading")
 4. Upload one or more IBKR activity statement CSV files
@@ -194,12 +197,13 @@ This addon requires the following permissions:
 | Permission | Purpose |
 |------------|---------|
 | accounts.getAll, accounts.create | Create and manage multi-currency accounts |
-| activities.import, activities.checkImport | Import transactions from CSV/API |
-| assets.searchTicker | Resolve ISIN symbols to Yahoo Finance tickers |
-| ui.sidebar.addItem, ui.router.add | Display import wizard and settings pages |
+| activities.getAll, activities.import | Skip duplicates of existing activities and import transactions |
+| market-data.searchTicker | Resolve ISIN symbols to Yahoo Finance tickers |
 | secrets.get, secrets.set, secrets.delete | Securely store Flex Query credentials |
-| events.portfolio.onUpdateComplete | Trigger automatic Flex Query fetch |
-| logger.* | Log operations for debugging |
+| events.onUpdateComplete | Trigger automatic Flex Query fetch on portfolio updates |
+| network.request | Reach `ndcdyn.interactivebrokers.com` (Flex Web Service) and `query1.finance.yahoo.com` (ticker lookup) through the host network broker |
+
+Sidebar/routing, logging and addon storage are baseline capabilities and need no permission.
 
 ## Development
 
