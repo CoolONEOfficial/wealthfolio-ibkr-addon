@@ -2,7 +2,7 @@
  * Ticker Resolution Utility
  *
  * Implements 4-tier strategy for resolving IBKR ISINs to Yahoo Finance tickers:
- * 1. Local cache (localStorage)
+ * 1. Local cache (addon storage via ctx.api.storage, in-memory fallback)
  * 2. Wealthfolio search API (stub)
  * 3. Yahoo Finance ISIN search API
  * 4. Manual user selection (UI handles)
@@ -13,7 +13,9 @@
 import { API_REQUEST_TIMEOUT_MS, TICKER_CACHE_MAX_ENTRIES, TICKER_CACHE_MAX_AGE_MS } from "./constants";
 import { getErrorMessage } from "./shared-utils";
 import type { TickerSearchResult } from "../types";
+import type { StorageAPI } from "@wealthfolio/addon-sdk";
 import { debug } from "./debug-logger";
+import { httpRequest } from "./network-client";
 
 export interface TickerResolutionRequest {
   isin: string;
@@ -44,6 +46,7 @@ export interface TickerCacheEntry {
 
 const YAHOO_FINANCE_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search";
 const YAHOO_FINANCE_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
 /**
  * Check if two symbols are "compatible" for matching purposes.
@@ -69,7 +72,38 @@ function areSymbolsCompatible(resultSymbol: string, requestSymbol: string): bool
   return false;
 }
 
-const LOCALSTORAGE_CACHE_KEY = "ibkr_ticker_cache";
+/** Storage key (charset [A-Za-z0-9_.:-] required by the host storage API) */
+const TICKER_CACHE_STORAGE_KEY = "ibkr_ticker_cache";
+
+/** Subset of the SDK storage API used for the ticker cache */
+export type TickerCacheStorage = Pick<StorageAPI, "get" | "set" | "delete">;
+
+/**
+ * In-memory fallback used when no host storage is registered.
+ * localStorage is unavailable in the Wealthfolio addon sandbox.
+ */
+function createMemoryStorage(): TickerCacheStorage {
+  const values = new Map<string, string>();
+  return {
+    get: async (key) => values.get(key) ?? null,
+    set: async (key, value) => {
+      values.set(key, value);
+    },
+    delete: async (key) => {
+      values.delete(key);
+    },
+  };
+}
+
+let tickerCacheStorage: TickerCacheStorage = createMemoryStorage();
+
+/**
+ * Register persistent storage for the ticker cache. Call with `ctx.api.storage` in `enable()`.
+ * Passing null/undefined resets to a fresh in-memory cache.
+ */
+export function setTickerCacheStorage(storage: TickerCacheStorage | null | undefined): void {
+  tickerCacheStorage = storage ?? createMemoryStorage();
+}
 
 /**
  * Validate that a parsed object is a valid TickerCacheEntry
@@ -86,7 +120,7 @@ function isValidCacheEntry(entry: unknown): entry is TickerCacheEntry {
 }
 
 /**
- * Tier 1: Check local cache (uses localStorage in web mode)
+ * Tier 1: Check local cache
  */
 async function checkLocalCache(
   isin: string,
@@ -94,9 +128,8 @@ async function checkLocalCache(
 ): Promise<TickerResolutionResult | null> {
   const cacheKey = `${isin}:${exchange}`;
 
-  // In web mode, only use localStorage
   try {
-    const cacheContent = localStorage.getItem(LOCALSTORAGE_CACHE_KEY);
+    const cacheContent = await tickerCacheStorage.get(TICKER_CACHE_STORAGE_KEY);
     if (cacheContent) {
       const cache = JSON.parse(cacheContent) as Record<string, unknown>;
       const entry = cache[cacheKey];
@@ -111,13 +144,13 @@ async function checkLocalCache(
     }
   } catch (error) {
     // Cache corruption handling: This executes when JSON.parse() fails due to:
-    // - Manually corrupted localStorage
-    // - Browser storage encoding issues
-    // - Incomplete writes from browser crashes
+    // - Manually corrupted storage values
+    // - Incomplete writes
+    // - Storage backend errors
     // While rare in normal operation, this ensures graceful recovery.
     debug.warn(`[Ticker Resolver] Cache corrupted, clearing:`, getErrorMessage(error));
     try {
-      localStorage.removeItem(LOCALSTORAGE_CACHE_KEY);
+      await tickerCacheStorage.delete(TICKER_CACHE_STORAGE_KEY);
     } catch (clearError) {
       debug.warn(`[Ticker Resolver] Failed to clear corrupted cache:`, getErrorMessage(clearError));
     }
@@ -158,7 +191,7 @@ function pruneCache(cache: Record<string, TickerCacheEntry>): Record<string, Tic
 }
 
 /**
- * Save successful resolution to local cache (uses localStorage in web mode)
+ * Save successful resolution to local cache
  */
 async function saveToLocalCache(
   isin: string,
@@ -177,10 +210,9 @@ async function saveToLocalCache(
     timestamp: new Date().toISOString(),
   };
 
-  // Use localStorage for web mode
   try {
     let cache: Record<string, TickerCacheEntry> = {};
-    const cacheContent = localStorage.getItem(LOCALSTORAGE_CACHE_KEY);
+    const cacheContent = await tickerCacheStorage.get(TICKER_CACHE_STORAGE_KEY);
     if (cacheContent) {
       cache = JSON.parse(cacheContent);
     }
@@ -189,7 +221,7 @@ async function saveToLocalCache(
     // Prune cache to prevent unbounded growth
     cache = pruneCache(cache);
 
-    localStorage.setItem(LOCALSTORAGE_CACHE_KEY, JSON.stringify(cache));
+    await tickerCacheStorage.set(TICKER_CACHE_STORAGE_KEY, JSON.stringify(cache));
   } catch (error) {
     // Cache errors are non-fatal but should be logged for debugging
     debug.warn(`[Ticker Resolver] Cache write error for ${isin}:${exchange}:`, getErrorMessage(error));
@@ -370,36 +402,25 @@ async function searchWealthfolioAPI(
  * Validate that a ticker exists on Yahoo Finance
  */
 async function validateYahooTicker(ticker: string): Promise<boolean> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
-
   try {
     const url = `${YAHOO_FINANCE_CHART_URL}/${encodeURIComponent(ticker)}`;
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-      signal: controller.signal,
+    const response = await httpRequest(url, {
+      headers: { "User-Agent": YAHOO_USER_AGENT },
+      timeoutMs: API_REQUEST_TIMEOUT_MS,
     });
 
     if (!response.ok) {
       return false;
     }
 
-    const data = await response.json();
+    const data = JSON.parse(response.body);
     // Ticker is valid if there's no error field in the response
     // (data?.chart?.error is undefined when ticker exists)
     return !data?.chart?.error;
   } catch (error) {
-    // Distinguish timeout errors from other errors for better debugging
-    if (error instanceof Error && error.name === "AbortError") {
-      debug.warn(`Ticker validation timed out for ${ticker} (>${API_REQUEST_TIMEOUT_MS}ms)`);
-    } else {
-      debug.warn(`Failed to validate ticker ${ticker}:`, error);
-    }
+    // Includes broker timeouts (> API_REQUEST_TIMEOUT_MS) and invalid JSON
+    debug.warn(`Failed to validate ticker ${ticker}:`, getErrorMessage(error));
     return false;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -417,10 +438,6 @@ async function searchYahooFinanceByISIN(
     return null;
   }
 
-  // Set up timeout with proper cleanup in finally block
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
-
   try {
     const url = `${YAHOO_FINANCE_SEARCH_URL}?q=${encodeURIComponent(isin)}`;
     debug.log(`[Ticker Resolver] Searching ISIN: ${isin}`);
@@ -428,12 +445,9 @@ async function searchYahooFinanceByISIN(
 
     debug.log(`[Ticker Resolver] Starting fetch for ${isin}...`);
 
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-      signal: controller.signal,
-      mode: 'cors',
+    const response = await httpRequest(url, {
+      headers: { "User-Agent": YAHOO_USER_AGENT },
+      timeoutMs: API_REQUEST_TIMEOUT_MS,
     });
     debug.log(`[Ticker Resolver] Fetch completed for ${isin}`);
 
@@ -444,7 +458,7 @@ async function searchYahooFinanceByISIN(
       return null;
     }
 
-    const data = await response.json();
+    const data = JSON.parse(response.body);
     // Validate that quotes is an array before using it
     const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
 
@@ -507,8 +521,6 @@ async function searchYahooFinanceByISIN(
   } catch (error) {
     debug.warn(`[Ticker Resolver] ERROR - Failed to search ISIN ${isin}:`, error);
     debug.warn(`[Ticker Resolver] Error type: ${getErrorMessage(error)}`);
-  } finally {
-    clearTimeout(timeoutId);
   }
 
   debug.log(`[Ticker Resolver] ISIN ${isin} resolution failed, returning null`);

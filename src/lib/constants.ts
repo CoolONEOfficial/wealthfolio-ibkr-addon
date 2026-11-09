@@ -41,6 +41,12 @@ export const FLEX_QUERY_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 1000;
  */
 export const API_REQUEST_TIMEOUT_MS = 10000;
 
+/**
+ * Timeout for a single Flex Web Service request (60 seconds).
+ * Statements can be large; the host network broker defaults to 10 s otherwise.
+ */
+export const FLEX_REQUEST_TIMEOUT_MS = 60000;
+
 // ==================== Limits ====================
 
 /**

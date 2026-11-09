@@ -13,7 +13,8 @@ function isDebugEnabled(): boolean {
       return localStorage.getItem('IBKR_DEBUG') === 'true';
     }
   } catch {
-    // localStorage not available (SSR, tests, etc.)
+    // localStorage not available: throws SecurityError inside the Wealthfolio
+    // addon sandbox (3.6+), unavailable in SSR/tests -> debug output stays off
   }
   return false;
 }

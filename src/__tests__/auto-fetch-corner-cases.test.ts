@@ -121,50 +121,6 @@ class MockActivitiesAPI {
   }
 }
 
-// Mock HTTP client for flex query fetcher
-class MockHttpClient {
-  responses: { url: string; response: any }[] = [];
-  defaultResponse = { ok: true, status: 200, status_text: 'OK', headers: {}, body: '' };
-
-  async fetch(url: string, _options?: any) {
-    const match = this.responses.find(r => url.includes(r.url));
-    if (match) {
-      return match.response;
-    }
-    return this.defaultResponse;
-  }
-  
-  setResponse(urlPattern: string, response: any) {
-    this.responses.push({ url: urlPattern, response });
-  }
-  
-  reset() {
-    this.responses = [];
-  }
-  
-  // Helper: Set up successful flex query response
-  setupSuccessfulFetch(csvContent: string) {
-    // Step 1: SendRequest success
-    this.setResponse('SendRequest', {
-      ok: true, status: 200, status_text: 'OK', headers: {},
-      body: '<FlexStatementResponse><Status>Success</Status><ReferenceCode>REF123</ReferenceCode></FlexStatementResponse>'
-    });
-    // Step 2: GetStatement success
-    this.setResponse('GetStatement', {
-      ok: true, status: 200, status_text: 'OK', headers: {},
-      body: csvContent
-    });
-  }
-  
-  // Helper: Set up error response
-  setupErrorResponse(errorCode: number, errorMessage: string) {
-    this.setResponse('SendRequest', {
-      ok: true, status: 200, status_text: 'OK', headers: {},
-      body: `<FlexStatementResponse><Status>Fail</Status><ErrorCode>${errorCode}</ErrorCode><ErrorMessage>${errorMessage}</ErrorMessage></FlexStatementResponse>`
-    });
-  }
-}
-
 // ========================================
 // TEST CONSTANTS
 // ========================================
